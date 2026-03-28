@@ -2512,6 +2512,11 @@ def cape_cin(pressure, temperature, dewpoint):
     if t.ndim == 1:
         t = t.reshape(1, -1)
         td = td.reshape(1, -1)
+    # Kernel indexes raw memory as t[col * nlevels + k], so must be C-contiguous
+    if not t.flags['C_CONTIGUOUS']:
+        t = cp.ascontiguousarray(t)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = t.shape[0]
     cape_out = cp.empty(ncols, dtype=cp.float64)
     cin_out = cp.empty(ncols, dtype=cp.float64)
@@ -2568,6 +2573,10 @@ def lfc(pressure, temperature, dewpoint):
     if t.ndim == 1:
         t = t.reshape(1, -1)
         td = td.reshape(1, -1)
+    if not t.flags['C_CONTIGUOUS']:
+        t = cp.ascontiguousarray(t)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = t.shape[0]
     lfc_p = cp.empty(ncols, dtype=cp.float64)
     lfc_t = cp.empty(ncols, dtype=cp.float64)
@@ -2595,6 +2604,10 @@ def el(pressure, temperature, dewpoint):
     if t.ndim == 1:
         t = t.reshape(1, -1)
         td = td.reshape(1, -1)
+    if not t.flags['C_CONTIGUOUS']:
+        t = cp.ascontiguousarray(t)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = t.shape[0]
     el_p = cp.empty(ncols, dtype=cp.float64)
     el_t = cp.empty(ncols, dtype=cp.float64)
@@ -2622,6 +2635,10 @@ def lifted_index(pressure, temperature, dewpoint):
     if t.ndim == 1:
         t = t.reshape(1, -1)
         td = td.reshape(1, -1)
+    if not t.flags['C_CONTIGUOUS']:
+        t = cp.ascontiguousarray(t)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = t.shape[0]
     out = cp.empty(ncols, dtype=cp.float64)
     grid, block = _grid_1d(ncols)
@@ -2646,6 +2663,8 @@ def precipitable_water(pressure, dewpoint_val):
     nlevels = p.size
     if td.ndim == 1:
         td = td.reshape(1, -1)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = td.shape[0]
     out = cp.empty(ncols, dtype=cp.float64)
     grid, block = _grid_1d(ncols)
@@ -2673,6 +2692,10 @@ def mixed_layer(pressure, temperature, dewpoint, depth=100.0):
     if t.ndim == 1:
         t = t.reshape(1, -1)
         td = td.reshape(1, -1)
+    if not t.flags['C_CONTIGUOUS']:
+        t = cp.ascontiguousarray(t)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = t.shape[0]
     t_out = cp.empty(ncols, dtype=cp.float64)
     td_out = cp.empty(ncols, dtype=cp.float64)
@@ -2703,6 +2726,10 @@ def downdraft_cape(pressure, temperature, dewpoint):
     if t.ndim == 1:
         t = t.reshape(1, -1)
         td = td.reshape(1, -1)
+    if not t.flags['C_CONTIGUOUS']:
+        t = cp.ascontiguousarray(t)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = t.shape[0]
     out = cp.empty(ncols, dtype=cp.float64)
     grid, block = _grid_1d(ncols)
@@ -2729,6 +2756,10 @@ def ccl(pressure, temperature, dewpoint):
     if t.ndim == 1:
         t = t.reshape(1, -1)
         td = td.reshape(1, -1)
+    if not t.flags['C_CONTIGUOUS']:
+        t = cp.ascontiguousarray(t)
+    if not td.flags['C_CONTIGUOUS']:
+        td = cp.ascontiguousarray(td)
     ncols = t.shape[0]
     ccl_p = cp.empty(ncols, dtype=cp.float64)
     ccl_t = cp.empty(ncols, dtype=cp.float64)

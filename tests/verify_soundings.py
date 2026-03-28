@@ -177,7 +177,7 @@ for site_id, (site_lat, site_lon, site_name) in SITES.items():
 
     # SRH (using scalar Bunkers approximation)
     gpu_srh_result = wind.storm_relative_helicity(
-        h_agl_gpu, u_gpu, v_gpu, cp.float64(3000.0), cp.float64(0.0), cp.float64(0.0))
+        u_gpu, v_gpu, h_agl_gpu, cp.float64(3000.0), cp.float64(0.0), cp.float64(0.0))
     if isinstance(gpu_srh_result, tuple):
         gpu_srh3 = float(cp.asnumpy(gpu_srh_result[2])[0])
     else:

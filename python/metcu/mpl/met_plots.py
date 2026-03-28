@@ -97,7 +97,8 @@ def plot_field(ax, data, title, cmap='RdYlBu_r', vmin=None, vmax=None,
     else:
         norm = Normalize(vmin=vmin, vmax=vmax)
 
-    im = ax.imshow(data_f, origin='lower', cmap=cmap_obj, norm=norm,
+    # HRRR Lambert grid: col 0 = east, needs horizontal flip
+    im = ax.imshow(np.fliplr(data_f), origin='lower', cmap=cmap_obj, norm=norm,
                    extent=extent, transform=_PLATE,
                    interpolation='bilinear')
 
@@ -526,8 +527,9 @@ def mesoanalysis_fast(fields, title='', save=None, dpi=150, figsize=(22, 13)):
         y = header_h + gap + row * (panel_h + cb_h + gap)
 
         # GPU colormap -> RGBA
+        # HRRR Lambert grid: col 0 = east, needs horizontal flip
         cmap = plt.get_cmap(cmap_name)
-        data_f = np.asarray(data, dtype=np.float64)
+        data_f = np.fliplr(np.asarray(data, dtype=np.float64))
         norm = np.clip((data_f - vmin) / (vmax - vmin + 1e-12), 0, 1)
         rgba = (cmap(norm) * 255).astype(np.uint8)
 

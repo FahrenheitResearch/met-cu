@@ -208,3 +208,49 @@ CPU reference: `metrust` v0.3.8 at `C:\Users\drew\metrust-py`
 4. **6 functions still FAIL in benchmark_complete.py**: All are metrust scalar-only limitations (height_to_pressure_std, pressure_to_height_std, altimeter_to_station_pressure, etc.) — met-cu handles arrays, metrust doesn't.
 
 5. **metrust CIN bug**: metrust's `surface_based_cape_cin` still has unbounded CIN on some profiles. met-cu's kernel is the more correct implementation.
+
+---
+
+## GPU-Accelerated Matplotlib Module (`metcu.mpl`)
+
+**Added 2026-03-28. Needs fixing.**
+
+### What it does
+- `import metcu.mpl` monkey-patches matplotlib's `contourf` and `pcolormesh` with GPU versions
+- `metcu.mpl.mesoanalysis(fields)` generates a 12-panel severe weather mesoanalysis
+- Uses cached cartopy map overlays (state borders rendered once as transparent PNG, composited on every frame)
+- GPU contourf is 12.9x faster than matplotlib on 1.9M points
+
+### Files
+- `python/metcu/mpl/__init__.py` — monkey-patch system, exports
+- `python/metcu/mpl/gpu_render.py` — `gpu_contourf`, `gpu_pcolormesh` core functions
+- `python/metcu/mpl/met_plots.py` — `mesoanalysis()`, `single_plot()`, individual plot functions
+- `python/metcu/mpl/compat.py` — colorbar compatibility wrappers
+- `python/metcu/mpl/_overlay_cache/` — cached transparent PNG of state borders
+
+### Known Issues (NEEDS FIXING)
+
+1. **HRRR data orientation**: The HRRR Lambert grid from cfrust has col 0 = east (reversed). We added `np.fliplr()` but the map overlay alignment may still be wrong — the state borders might not line up correctly with the data after flipping.
+
+2. **The mesoanalysis panels look wrong**: Several panels have issues:
+   - CAPE/reflectivity appear noisy/speckled on quiet weather days (correct behavior but looks bad)
+   - The map overlay (state borders) may not perfectly align with the data because the overlay is rendered in Lambert Conformal projection but the data is displayed as a raw pixel grid via `imshow`
+   - The fliplr fix may have broken the overlay alignment
+
+3. **The core issue**: We're displaying a Lambert Conformal grid as if it's a regular lat/lon grid (via `imshow`). The HRRR grid is NOT rectangular in lat/lon — it's rectangular in Lambert projection space. So when we display it with `imshow` and overlay cartopy borders (which are in lat/lon), the borders don't align with geographic features in the data.
+
+4. **The correct fix**: Either:
+   - Use `ax.pcolormesh(lons, lats, data, transform=ccrs.PlateCarree())` with the actual 2D lat/lon arrays from the GRIB (slow but correct)
+   - Or use the Lambert projection for both the data display AND the map features (requires knowing the exact HRRR projection parameters)
+   - The HRRR projection parameters are: Lambert Conformal, central_longitude=-97.5, central_latitude=38.5, standard_parallels=(38.5,), globe with radius 6371229m
+
+5. **Colorbar rendering**: The PIL-based colorbars (gradient strips with text) are low quality compared to matplotlib's. Consider using matplotlib just for the colorbar.
+
+### What works
+- GPU CUDA kernels: 133/133 verified, all correct
+- GPU contourf speedup: 12.9x confirmed
+- Cached overlay system: 900ms/frame vs 13s/frame
+- The computation pipeline is solid — only the visualization/alignment is broken
+
+### Reference image style
+The target look is: smooth continuous colormap, state/country borders overlaid, horizontal colorbar at bottom, clean title. See `C:\Users\drew\hrrr-mesoanalysis\output\hrrr\` for reference images from another project.

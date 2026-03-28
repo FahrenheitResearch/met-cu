@@ -186,7 +186,8 @@ def _STUB_thickness_from_rh(p, t, rh):
     """Hypsometric thickness from P, T, RH -- inline fallback."""
     import cupy as cp
     w = _k_mixing_ratio_from_relative_humidity(p, t, rh)
-    tv = t * (1.0 + w / 0.6219569100577033) / (1.0 + w)
+    t_k = t + 273.15  # Celsius -> Kelvin
+    tv = t_k * (1.0 + w / 0.6219569100577033) / (1.0 + w)
     if float(p[0]) < float(p[-1]):
         p = p[::-1]
         tv = tv[::-1]
@@ -202,8 +203,7 @@ def _STUB_parcel_profile_with_lcl(p, t, td):
 
 def _STUB_get_mixed_layer_parcel(p, t, td, d):
     """Mixed layer parcel -- inline fallback."""
-    ml_t = _k_mixed_layer(p, t, d)
-    ml_td = _k_mixed_layer(p, td, d)
+    ml_t, ml_td = _k_mixed_layer(p, t, td, d)
     return (p[0], ml_t, ml_td)
 
 
@@ -593,7 +593,7 @@ def mixing_ratio(partial_press_or_pressure, total_press_or_temperature,
     """
     a = _to_gpu(partial_press_or_pressure)
     b = _to_gpu(total_press_or_temperature)
-    return _k_mixing_ratio(a, b, molecular_weight_ratio)
+    return _k_mixing_ratio(a, b)
 
 
 def density(pressure, temperature, mixing_ratio_val):
@@ -611,7 +611,7 @@ def density(pressure, temperature, mixing_ratio_val):
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    w = _to_gpu(mixing_ratio_val)
+    w = _to_gpu(mixing_ratio_val) / 1000.0  # g/kg -> kg/kg (kernel expects kg/kg)
     return _k_density(p, t, w)
 
 
@@ -823,7 +823,7 @@ def virtual_potential_temperature(pressure, temperature, mixing_ratio_val):
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    w = _to_gpu(mixing_ratio_val)
+    w = _to_gpu(mixing_ratio_val) / 1000.0  # g/kg -> kg/kg (kernel expects kg/kg)
     return _k_virtual_potential_temperature(p, t, w)
 
 
@@ -948,8 +948,8 @@ def relative_humidity_from_mixing_ratio(pressure, temperature, mixing_ratio_val)
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    w = _to_gpu(mixing_ratio_val)
-    return _k_relative_humidity_from_mixing_ratio(p, t, w)
+    w = _to_gpu(mixing_ratio_val) / 1000.0  # g/kg -> kg/kg (kernel expects kg/kg)
+    return _k_relative_humidity_from_mixing_ratio(p, t, w) / 100.0  # percent -> fractional
 
 
 def relative_humidity_from_specific_humidity(pressure, temperature, specific_humidity):
@@ -968,7 +968,7 @@ def relative_humidity_from_specific_humidity(pressure, temperature, specific_hum
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     q = _to_gpu(specific_humidity)
-    return _k_relative_humidity_from_specific_humidity(p, t, q)
+    return _k_relative_humidity_from_specific_humidity(p, t, q) / 100.0  # percent -> fractional
 
 
 def specific_humidity_from_dewpoint(pressure, dewpoint_val):
@@ -1550,17 +1550,13 @@ def cape_cin(pressure, temperature, dewpoint_val, parcel_profile_or_height=None,
     Returns
     -------
     tuple of cupy.ndarray
-        CAPE (J/kg), CIN (J/kg), optionally LCL height (m), LFC height (m).
+        CAPE (J/kg), CIN (J/kg), LCL_p, LFC_p, EL_p.
     """
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    h = _1d(parcel_profile_or_height) if parcel_profile_or_height is not None else None
-    psfc = _scalar(kwargs.get("psfc", pressure[0] if hasattr(pressure, '__getitem__') else pressure))
-    t2m = _scalar(kwargs.get("t2m", temperature[0] if hasattr(temperature, '__getitem__') else temperature))
-    td2m = _scalar(kwargs.get("td2m", dewpoint_val[0] if hasattr(dewpoint_val, '__getitem__') else dewpoint_val))
-    return _k_cape_cin(p, t, td, h, psfc, t2m, td2m, parcel_type,
-                           float(ml_depth), float(mu_depth), top_m)
+    result = _k_cape_cin(p, t, td)
+    return result
 
 
 def surface_based_cape_cin(pressure, temperature, dewpoint_val):
@@ -1605,7 +1601,17 @@ def mixed_layer_cape_cin(pressure, temperature, dewpoint_val, depth=100.0):
     t = _1d(temperature)
     td = _1d(dewpoint_val)
     d = _scalar(depth)
-    return _k_cape_cin(p, t, td, d)
+    # Get mixed-layer parcel
+    ml_t, ml_td = _k_mixed_layer(p, t, td, d)
+    # Create modified profiles with ML parcel at surface
+    t_ml = t.copy()
+    td_ml = td.copy()
+    t_ml[0] = ml_t
+    td_ml[0] = ml_td
+    result = _k_cape_cin(p, t_ml, td_ml)
+    if isinstance(result, tuple) and len(result) > 2:
+        return result[0], result[1]
+    return result
 
 
 def most_unstable_cape_cin(pressure, temperature, dewpoint_val, depth=300, **kwargs):
@@ -1627,7 +1633,17 @@ def most_unstable_cape_cin(pressure, temperature, dewpoint_val, depth=300, **kwa
     t = _1d(temperature)
     td = _1d(dewpoint_val)
     d = _scalar(depth)
-    return _k_cape_cin(p, t, td, d)
+    # Find most unstable parcel
+    mu_p, mu_t, mu_td, mu_idx = _STUB_get_most_unstable_parcel(p, t, td, d)
+    # Create modified profiles starting from MU parcel
+    t_mu = t.copy()
+    td_mu = td.copy()
+    t_mu[0] = float(mu_t) if hasattr(mu_t, '__float__') else mu_t
+    td_mu[0] = float(mu_td) if hasattr(mu_td, '__float__') else mu_td
+    result = _k_cape_cin(p, t_mu, td_mu)
+    if isinstance(result, tuple) and len(result) > 2:
+        return result[0], result[1]
+    return result
 
 
 def downdraft_cape(pressure, temperature, dewpoint_val):
@@ -1671,32 +1687,34 @@ def showalter_index(pressure, temperature, dewpoint_val):
 def k_index(*args, vertical_dim=0):
     """K-Index.
 
-    Parameters
-    ----------
-    Either (pressure, temperature, dewpoint) arrays or 5 scalar level values.
+    Called as ``k_index(t850, td850, t700, td700, t500)``.
 
     Returns
     -------
     cupy.ndarray (delta_degC)
     """
     if len(args) == 5:
-        return _k_k_index(*[_to_gpu(a) for a in args])
+        t850, td850, t700, td700, t500 = [_to_gpu(a) for a in args]
+        return _k_k_index(t850, t700, t500, td850, td700)
     elif len(args) == 3:
         p, t, td = [_1d(a) for a in args]
         return _k_k_index(p, t, td)
-    raise TypeError("k_index expects (pressure, temperature, dewpoint) or 5 scalar level values")
+    raise TypeError("k_index expects (t850, td850, t700, td700, t500) or (pressure, temperature, dewpoint)")
 
 
 def total_totals(*args, vertical_dim=0):
     """Total Totals Index.
+
+    Called as ``total_totals(t850, td850, t500)``.
 
     Returns
     -------
     cupy.ndarray (delta_degC)
     """
     if len(args) == 3:
-        return _k_total_totals(*[_to_gpu(a) for a in args])
-    raise TypeError("total_totals expects (pressure, temperature, dewpoint) or 3 scalar level values")
+        t850, td850, t500 = [_to_gpu(a) for a in args]
+        return _k_total_totals(t850, t500, td850)
+    raise TypeError("total_totals expects (t850, td850, t500)")
 
 
 def cross_totals(*args, vertical_dim=0):
@@ -1736,7 +1754,8 @@ def sweat_index(t850, td850, t500, dd850, dd500, ff850, ff500):
     -------
     cupy.ndarray (dimensionless)
     """
-    return _k_sweat_index(
+    from metcu.kernels.wind import sweat_index_direct as _k_sweat_index_direct
+    return _k_sweat_index_direct(
         _to_gpu(t850), _to_gpu(td850), _to_gpu(t500),
         _to_gpu(dd850), _to_gpu(dd500), _to_gpu(ff850), _to_gpu(ff500),
     )
@@ -1828,7 +1847,8 @@ def brunt_vaisala_period(height, potential_temp):
     """
     z = _1d(height)
     theta = _1d(potential_temp)
-    return _k_brunt_vaisala_period(z, theta)
+    bvf = _k_brunt_vaisala_frequency(z, theta)
+    return _k_brunt_vaisala_period(bvf)
 
 
 def brunt_vaisala_frequency_squared(height, potential_temp):
@@ -1903,17 +1923,26 @@ def get_layer(pressure, *args, p_bottom=None, p_top=None,
     """
     p = _1d(pressure)
     value_arrays = [_1d(a) for a in args]
-    pb = _scalar(p_bottom) if p_bottom is not None else (_scalar(bottom) if bottom is not None else float(p[0]))
+    pb = _scalar(p_bottom) if p_bottom is not None else (_scalar(bottom) if bottom is not None else float(cp.asnumpy(p[0])))
     if p_top is not None:
         pt = _scalar(p_top)
     elif depth is not None:
         pt = pb - _scalar(depth)
     else:
         raise TypeError("get_layer requires either p_top or depth")
-    results = _k_get_layer(p, value_arrays, pb, pt)
-    if len(results) == 2:
-        return results[0], results[1]
-    return results
+    # Call kernel for each value array separately
+    results = []
+    p_layer = None
+    for v_arr in value_arrays:
+        p_l, v_l = _k_get_layer(p, v_arr, pb, pt)
+        if p_layer is None:
+            p_layer = p_l
+        results.append(v_l)
+    if p_layer is None:
+        p_layer = p
+    if len(results) == 1:
+        return p_layer, results[0]
+    return (p_layer,) + tuple(results)
 
 
 def get_layer_heights(pressure, heights, p_bottom, p_top):
@@ -1928,13 +1957,18 @@ def get_layer_heights(pressure, heights, p_bottom, p_top):
 
     Returns
     -------
-    tuple of (cupy.ndarray, cupy.ndarray)
+    tuple of (float, float, float) -- (p_layer, h_bottom, h_top)
     """
     p = _1d(pressure)
     h = _1d(heights)
     pb = _scalar(p_bottom)
     pt = _scalar(p_top)
-    return _k_get_layer_heights(p, h, pb, pt)
+    # Interpolate heights at pressure boundaries (1D case)
+    p_np = cp.asnumpy(p)
+    h_np = cp.asnumpy(h)
+    h_bot = float(np.interp(pb, p_np[::-1], h_np[::-1])) if pb >= float(p_np[-1]) else float(h_np[0])
+    h_top = float(np.interp(pt, p_np[::-1], h_np[::-1])) if pt >= float(p_np[-1]) else float(h_np[-1])
+    return h_bot, h_top, h_top - h_bot
 
 
 def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
@@ -1944,7 +1978,7 @@ def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
     Parameters
     ----------
     pressure : array-like (hPa)
-    *args : array-like
+    *args : array-like (one or two profiles)
     depth : float (hPa)
 
     Returns
@@ -1952,21 +1986,27 @@ def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
     float or tuple of floats
     """
     p = _1d(pressure)
-    value_arrays = [_1d(a) for a in args]
     d = _scalar(depth)
-    results = _k_mixed_layer(p, value_arrays, d)
-    if len(results) == 1:
-        return results[0]
-    return tuple(results)
+    if len(args) == 1:
+        # Single profile: pass it as both T and Td, return only first result
+        v = _1d(args[0])
+        t_ml, td_ml = _k_mixed_layer(p, v, v, d)
+        return t_ml
+    elif len(args) >= 2:
+        t = _1d(args[0])
+        td = _1d(args[1])
+        return _k_mixed_layer(p, t, td, d)
+    raise TypeError("mixed_layer requires at least one profile argument")
 
 
-def mean_pressure_weighted(pressure, values):
+def mean_pressure_weighted(pressure, values, p_bottom=None, p_top=None):
     """Pressure-weighted mean of a quantity.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     values : array-like
+    p_bottom, p_top : float, optional
 
     Returns
     -------
@@ -1974,7 +2014,19 @@ def mean_pressure_weighted(pressure, values):
     """
     p = _1d(pressure)
     v = _1d(values)
-    return _k_mean_pressure_weighted(p, v)
+    pb = _scalar(p_bottom) if p_bottom is not None else float(cp.asnumpy(p[0]))
+    pt = _scalar(p_top) if p_top is not None else float(cp.asnumpy(p[-1]))
+    # 1D case: pressure-weighted average using trapezoidal rule
+    p_np = cp.asnumpy(p)
+    v_np = cp.asnumpy(v)
+    mask = (p_np <= pb) & (p_np >= pt)
+    if mask.sum() < 2:
+        return float(v_np[mask].mean()) if mask.sum() > 0 else 0.0
+    p_sub = p_np[mask]
+    v_sub = v_np[mask]
+    dp = np.abs(np.diff(p_sub))
+    avg_v = (v_sub[:-1] + v_sub[1:]) / 2.0
+    return float(np.sum(avg_v * dp) / np.sum(dp))
 
 
 def get_mixed_layer_parcel(pressure, temperature, dewpoint_val, depth=100.0):
@@ -2310,7 +2362,6 @@ def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
     tuple of 3 tuples, each (cupy.ndarray, cupy.ndarray)
     """
     if height is not None:
-        p = _1d(pressure_or_u)
         u = _1d(u_or_v)
         v = _1d(v_or_height)
         h = _1d(height)
@@ -2318,8 +2369,7 @@ def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
         u = _1d(pressure_or_u)
         v = _1d(u_or_v)
         h = _1d(v_or_height)
-        p = None
-    return _k_bunkers_storm_motion(p, u, v, h)
+    return _k_bunkers_storm_motion(u, v, h)
 
 
 def corfidi_storm_motion(pressure_or_u, u_or_v, v_or_height, *args,
@@ -2539,7 +2589,7 @@ def geostrophic_wind(heights, dx=None, dy=None, latitude=None, x_dim=-1,
 
     Parameters
     ----------
-    heights : 2-D array-like (m)
+    heights : 2-D array-like (m) -- geopotential height
     latitude : 2-D array-like (degrees)
     dx, dy : float (m)
 
@@ -2552,7 +2602,9 @@ def geostrophic_wind(heights, dx=None, dy=None, latitude=None, x_dim=-1,
     f_arr = _k_coriolis_parameter(lats_arr)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_geostrophic_wind(h_arr, f_arr, dx_val, dy_val)
+    # metrust convention: input Z is geopotential height (m), formula is
+    # ug = -(g/f)*dZ/dy.  Pass standard g.
+    return _k_geostrophic_wind(h_arr, f_arr, dx_val, dy_val, g=9.80665)
 
 
 def ageostrophic_wind(u, v, heights, lats, dx, dy):
@@ -2758,26 +2810,31 @@ def curvature_vorticity(u, v, dx, dy):
     return _k_curvature_vorticity(u_arr, v_arr, dx_val, dy_val)
 
 
-def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy):
+def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy, latitude=None):
     """Inertial-advective wind.
 
     Parameters
     ----------
-    u, v : 2-D array-like (m/s)
-    u_geo, v_geo : 2-D array-like (m/s)
+    u, v : 2-D array-like (m/s) -- actual wind (not used in kernel)
+    u_geo, v_geo : 2-D array-like (m/s) -- geostrophic wind
     dx, dy : float (m)
+    latitude : 2-D array-like (degrees), optional
 
     Returns
     -------
     tuple of (cupy.ndarray, cupy.ndarray) (m/s)
     """
-    u_arr = _2d(u)
-    v_arr = _2d(v)
     ug = _2d(u_geo)
     vg = _2d(v_geo)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_inertial_advective_wind(u_arr, v_arr, ug, vg, dx_val, dy_val)
+    # Kernel requires Coriolis parameter f; estimate from mid-latitude if not given
+    if latitude is not None:
+        f_arr = _k_coriolis_parameter(_2d(latitude))
+    else:
+        # Default to ~45 degrees latitude Coriolis
+        f_arr = cp.full_like(ug, 2.0 * 7.2921159e-5 * np.sin(np.deg2rad(45.0)))
+    return _k_inertial_advective_wind(ug, vg, f_arr, dx_val, dy_val)
 
 
 def kinematic_flux(v_component, scalar):
@@ -3020,10 +3077,21 @@ def supercell_composite_parameter(mucape, srh_eff, bulk_shear_eff):
 def critical_angle(*args):
     """Critical angle between storm-relative inflow and 0-500m shear.
 
+    Can be called as:
+    - ``critical_angle(u_storm, v_storm, u_shear, v_shear)`` -- 4 args
+    - ``critical_angle(u_storm, v_storm, u_sfc, v_sfc, u_500, v_500)`` -- 6 args
+
     Returns
     -------
     cupy.ndarray (degrees)
     """
+    if len(args) == 4:
+        # 4-arg form: (storm_u, storm_v, u_shear, v_shear)
+        # Convert to 6-arg form by setting sfc=(0,0) and 500=(shear_u, shear_v)
+        storm_u, storm_v, u_shear, v_shear = [_to_gpu(a) for a in args]
+        u_sfc = _to_gpu(0.0) * cp.ones_like(storm_u)
+        v_sfc = _to_gpu(0.0) * cp.ones_like(storm_v)
+        return _k_critical_angle(storm_u, storm_v, u_sfc, v_sfc, u_shear, v_shear)
     gpu_args = [_to_gpu(a) for a in args]
     return _k_critical_angle(*gpu_args)
 
@@ -3236,10 +3304,17 @@ def compute_lapse_rate(temperature_c_3d, qvapor_3d, height_agl_3d,
     Returns lapse rate shaped (ny, nx) in C/km.
     """
     t3 = _to_gpu(temperature_c_3d)
-    q3 = _to_gpu(qvapor_3d)
     h3 = _to_gpu(height_agl_3d)
-    return _k_compute_lapse_rate(t3, q3, h3, _scalar(bottom_km),
-                                     _scalar(top_km))
+    bottom_m = _scalar(bottom_km) * 1000.0
+    top_m = _scalar(top_km) * 1000.0
+    if t3.ndim == 3:
+        nz, ny, nx = t3.shape
+        # Reshape (nz, ny, nx) -> (ny*nx, nz) for the column kernel
+        t_2d = t3.reshape(nz, ny * nx).T.copy()  # (ny*nx, nz)
+        h_2d = h3.reshape(nz, ny * nx).T.copy()  # (ny*nx, nz)
+        result = _k_compute_lapse_rate(t_2d, h_2d, bottom_m, top_m)
+        return result.reshape(ny, nx)
+    return _k_compute_lapse_rate(t3, h3, bottom_m, top_m)
 
 
 def compute_pw(qvapor_3d, pressure_3d):
@@ -3279,40 +3354,40 @@ def compute_scp(mucape, srh_3km, shear_6km):
 
 
 def compute_ehi(cape, srh):
-    """Energy-Helicity Index on pre-computed 2-D fields.
+    """Energy-Helicity Index on pre-computed fields.
 
-    All inputs: shape (ny, nx).
-    Returns EHI shaped (ny, nx), dimensionless.
+    Inputs can be scalar, 1-D, or 2-D.
+    Returns EHI with same shape, dimensionless.
     """
-    c = _2d(cape)
-    s = _2d(srh)
+    c = _to_gpu(cape)
+    s = _to_gpu(srh)
     return _k_compute_ehi(c, s)
 
 
 def compute_ship(cape, shear06, t500, lr_700_500, mixing_ratio_gkg):
-    """Significant Hail Parameter (SHIP) on 2-D fields.
+    """Significant Hail Parameter (SHIP).
 
-    All inputs: shape (ny, nx).
-    Returns SHIP shaped (ny, nx), dimensionless.
+    Inputs can be scalar, 1-D, or 2-D.
+    Returns SHIP, dimensionless.
     """
-    c = _2d(cape)
-    sh = _2d(shear06)
-    t5 = _2d(t500)
-    lr = _2d(lr_700_500)
-    mr = _2d(mixing_ratio_gkg)
+    c = _to_gpu(cape)
+    sh = _to_gpu(shear06)
+    t5 = _to_gpu(t500)
+    lr = _to_gpu(lr_700_500)
+    mr = _to_gpu(mixing_ratio_gkg)
     return _k_compute_ship(c, sh, t5, lr, mr)
 
 
 def compute_dcp(dcape, mu_cape, shear06, mu_mixing_ratio):
-    """Derecho Composite Parameter (DCP) on 2-D fields.
+    """Derecho Composite Parameter (DCP).
 
-    All inputs: shape (ny, nx).
-    Returns DCP shaped (ny, nx), dimensionless.
+    Inputs can be scalar, 1-D, or 2-D.
+    Returns DCP, dimensionless.
     """
-    d = _2d(dcape)
-    mc = _2d(mu_cape)
-    sh = _2d(shear06)
-    mr = _2d(mu_mixing_ratio)
+    d = _to_gpu(dcape)
+    mc = _to_gpu(mu_cape)
+    sh = _to_gpu(shear06)
+    mr = _to_gpu(mu_mixing_ratio)
     return _k_compute_dcp(d, mc, sh, mr)
 
 
@@ -3418,7 +3493,10 @@ def smooth_circular(data, radius, passes=1):
     cupy.ndarray
     """
     arr = _2d(data)
-    return _k_smooth_circular(arr, float(radius), int(passes))
+    result = _k_smooth_circular(arr, int(radius))
+    for _ in range(int(passes) - 1):
+        result = _k_smooth_circular(result, int(radius))
+    return result
 
 
 def smooth_n_point(data, n, passes=1):

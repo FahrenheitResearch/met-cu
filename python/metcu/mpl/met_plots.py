@@ -10,19 +10,21 @@ from metcu.mpl.gpu_render import gpu_contourf, gpu_pcolormesh
 from metcu.kernels import thermo, wind, grid
 
 
-def plot_temperature(ax, t2m, cmap='RdYlBu_r', units='F', **kwargs):
+def plot_temperature(ax, t2m, cmap='RdYlBu_r', units='F', smooth=True, **kwargs):
     """Plot 2m temperature field.
 
     t2m: 2D array in Kelvin or Celsius (auto-detected)
+    smooth: if True, use continuous colormap (256 levels). If False, use discrete bands.
     """
     t = t2m - 273.15 if np.nanmax(t2m) > 100 else t2m
     if units == 'F':
         t = t * 9 / 5 + 32
-        levels = kwargs.pop('levels', np.arange(-20, 125, 5))
         label = 'Temperature (F)'
+        default_levels = np.linspace(-20, 120, 256) if smooth else np.arange(-20, 125, 5)
     else:
-        levels = kwargs.pop('levels', np.arange(-40, 50, 2.5))
         label = 'Temperature (C)'
+        default_levels = np.linspace(-40, 50, 256) if smooth else np.arange(-40, 50, 2.5)
+    levels = kwargs.pop('levels', default_levels)
     sm = gpu_contourf(ax, t, levels=levels, cmap=cmap, extend='both', **kwargs)
     ax.set_title(label)
     return sm
@@ -33,10 +35,10 @@ def plot_dewpoint(ax, td2m, cmap='YlGn', units='F', **kwargs):
     td = td2m - 273.15 if np.nanmax(td2m) > 100 else td2m
     if units == 'F':
         td = td * 9 / 5 + 32
-        levels = kwargs.pop('levels', np.arange(-10, 85, 5))
+        levels = kwargs.pop('levels', np.linspace(-10, 85, 256))
         label = 'Dewpoint (F)'
     else:
-        levels = kwargs.pop('levels', np.arange(-30, 35, 2.5))
+        levels = kwargs.pop('levels', np.linspace(-30, 35, 256))
         label = 'Dewpoint (C)'
     sm = gpu_contourf(ax, td, levels=levels, cmap=cmap, extend='both', **kwargs)
     ax.set_title(label)
@@ -94,7 +96,7 @@ def plot_theta_e(ax, t2m, td2m, p_sfc=1013.0, cmap='magma', **kwargs):
         cp.full(n, p_sfc), t_gpu, td_gpu)).reshape(t.shape)
     cp.get_default_memory_pool().free_all_blocks()
     levels = kwargs.pop('levels', None)
-    sm = gpu_contourf(ax, theta_e, levels=levels or 20, cmap=cmap, extend='both', **kwargs)
+    sm = gpu_contourf(ax, theta_e, levels=levels or 128, cmap=cmap, extend='both', **kwargs)
     ax.set_title('Theta-E (K)')
     return sm
 
@@ -122,7 +124,7 @@ def plot_frontogenesis(ax, t, u, v, dx=3000.0, dy=3000.0, cmap='RdBu_r', **kwarg
         dx, dy)) * 1e9
     cp.get_default_memory_pool().free_all_blocks()
     levels = kwargs.pop('levels', None)
-    sm = gpu_contourf(ax, fronto, levels=levels or 20, cmap=cmap, extend='both', **kwargs)
+    sm = gpu_contourf(ax, fronto, levels=levels or 128, cmap=cmap, extend='both', **kwargs)
     ax.set_title('Frontogenesis (x10-9 K/m/s)')
     return sm
 
@@ -144,7 +146,7 @@ def plot_wind_speed(ax, u, v, cmap='YlOrRd', knots=True, **kwargs):
 def plot_pwat(ax, pwat, cmap='GnBu', **kwargs):
     """Plot precipitable water."""
     levels = kwargs.pop('levels', None)
-    sm = gpu_contourf(ax, pwat, levels=levels or 20, cmap=cmap, extend='both', **kwargs)
+    sm = gpu_contourf(ax, pwat, levels=levels or 128, cmap=cmap, extend='both', **kwargs)
     ax.set_title('PWAT (mm)')
     return sm
 

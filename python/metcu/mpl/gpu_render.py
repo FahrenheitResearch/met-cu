@@ -135,11 +135,11 @@ def gpu_contourf(ax, *args, **kwargs):
 
     # Use original imshow to avoid recursion; it's an unbound method so pass ax
     if _original_imshow is not None:
-        _original_imshow(ax, rgba_np, aspect='auto', origin='upper',
-                         extent=extent_arg, interpolation='nearest')
+        _original_imshow(ax, rgba_np, aspect='auto', origin='lower',
+                         extent=extent_arg, interpolation='bilinear')
     else:
-        ax.imshow(rgba_np, aspect='auto', origin='upper', extent=extent_arg,
-                  interpolation='nearest')
+        ax.imshow(rgba_np, aspect='auto', origin='lower', extent=extent_arg,
+                  interpolation='bilinear')
 
     # --- Return ScalarMappable for colorbar compatibility ---
     norm = BoundaryNorm(levels, cmap.N, clip=True)
@@ -221,11 +221,11 @@ def gpu_pcolormesh(ax, *args, **kwargs):
         extent_arg = [float(X.min()), float(X.max()), float(Y.min()), float(Y.max())]
 
     if _original_imshow is not None:
-        _original_imshow(ax, rgba_np, aspect='auto', origin='upper',
-                         extent=extent_arg, interpolation='nearest')
+        _original_imshow(ax, rgba_np, aspect='auto', origin='lower',
+                         extent=extent_arg, interpolation='bilinear')
     else:
-        ax.imshow(rgba_np, aspect='auto', origin='upper', extent=extent_arg,
-                  interpolation='nearest')
+        ax.imshow(rgba_np, aspect='auto', origin='lower', extent=extent_arg,
+                  interpolation='bilinear')
 
     norm = Normalize(vmin=vmin, vmax=vmax)
     sm = ScalarMappable(norm=norm, cmap=cmap)

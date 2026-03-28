@@ -15,10 +15,14 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 def _to_gpu(arr):
-    """Accept numpy or cupy, return cupy on the current device."""
+    """Accept numpy, cupy, or scalar, return cupy on the current device."""
+    if isinstance(arr, (int, float)):
+        return cp.asarray(arr, dtype=cp.float64)
     if isinstance(arr, np.ndarray):
         return cp.asarray(arr, dtype=cp.float64)
-    return cp.ascontiguousarray(arr, dtype=cp.float64)
+    if isinstance(arr, cp.ndarray):
+        return cp.ascontiguousarray(arr, dtype=cp.float64)
+    return cp.asarray(arr, dtype=cp.float64)
 
 
 def _grid_block(ny, nx):
@@ -26,6 +30,16 @@ def _grid_block(ny, nx):
     block = (16, 16, 1)
     grid = ((nx + 15) // 16, (ny + 15) // 16, 1)
     return grid, block
+
+
+def _broadcast_spacing(val, shape):
+    """Broadcast a scalar or 0-d array to a full 2-D array matching shape."""
+    val = _to_gpu(val)
+    if val.ndim == 0:
+        return cp.full(shape, float(val), dtype=cp.float64)
+    if val.shape != shape:
+        return cp.broadcast_to(val, shape).copy()
+    return val
 
 
 # ===================================================================
@@ -59,8 +73,9 @@ _vorticity_kern = cp.RawKernel(_vorticity_code, 'vorticity_kernel')
 
 def vorticity(u, v, dx, dy):
     """Relative vorticity  dv/dx - du/dy."""
-    u, v, dx, dy = (_to_gpu(a) for a in (u, v, dx, dy))
+    u, v = _to_gpu(u), _to_gpu(v)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _vorticity_kern(grid, block, (u, v, dx, dy, out, np.int32(ny), np.int32(nx)))
@@ -94,8 +109,9 @@ _divergence_kern = cp.RawKernel(_divergence_code, 'divergence_kernel')
 
 def divergence(u, v, dx, dy):
     """Horizontal divergence  du/dx + dv/dy."""
-    u, v, dx, dy = (_to_gpu(a) for a in (u, v, dx, dy))
+    u, v = _to_gpu(u), _to_gpu(v)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _divergence_kern(grid, block, (u, v, dx, dy, out, np.int32(ny), np.int32(nx)))
@@ -130,8 +146,9 @@ _absolute_vorticity_kern = cp.RawKernel(_absolute_vorticity_code, 'absolute_vort
 
 def absolute_vorticity(u, v, dx, dy, f):
     """Absolute vorticity  (dv/dx - du/dy) + f."""
-    u, v, dx, dy, f = (_to_gpu(a) for a in (u, v, dx, dy, f))
+    u, v, f = _to_gpu(u), _to_gpu(v), _to_gpu(f)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _absolute_vorticity_kern(grid, block, (u, v, dx, dy, f, out, np.int32(ny), np.int32(nx)))
@@ -165,8 +182,9 @@ _shearing_deformation_kern = cp.RawKernel(_shearing_deformation_code, 'shearing_
 
 def shearing_deformation(u, v, dx, dy):
     """Shearing deformation  dv/dx + du/dy."""
-    u, v, dx, dy = (_to_gpu(a) for a in (u, v, dx, dy))
+    u, v = _to_gpu(u), _to_gpu(v)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _shearing_deformation_kern(grid, block, (u, v, dx, dy, out, np.int32(ny), np.int32(nx)))
@@ -200,8 +218,9 @@ _stretching_deformation_kern = cp.RawKernel(_stretching_deformation_code, 'stret
 
 def stretching_deformation(u, v, dx, dy):
     """Stretching deformation  du/dx - dv/dy."""
-    u, v, dx, dy = (_to_gpu(a) for a in (u, v, dx, dy))
+    u, v = _to_gpu(u), _to_gpu(v)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _stretching_deformation_kern(grid, block, (u, v, dx, dy, out, np.int32(ny), np.int32(nx)))
@@ -239,8 +258,9 @@ _total_deformation_kern = cp.RawKernel(_total_deformation_code, 'total_deformati
 
 def total_deformation(u, v, dx, dy):
     """Total deformation  sqrt(shearing^2 + stretching^2)."""
-    u, v, dx, dy = (_to_gpu(a) for a in (u, v, dx, dy))
+    u, v = _to_gpu(u), _to_gpu(v)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _total_deformation_kern(grid, block, (u, v, dx, dy, out, np.int32(ny), np.int32(nx)))
@@ -284,8 +304,9 @@ _curvature_vorticity_kern = cp.RawKernel(_curvature_vorticity_code, 'curvature_v
 
 def curvature_vorticity(u, v, dx, dy):
     """Curvature vorticity component of relative vorticity."""
-    u, v, dx, dy = (_to_gpu(a) for a in (u, v, dx, dy))
+    u, v = _to_gpu(u), _to_gpu(v)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _curvature_vorticity_kern(grid, block, (u, v, dx, dy, out, np.int32(ny), np.int32(nx)))
@@ -330,8 +351,9 @@ _shear_vorticity_kern = cp.RawKernel(_shear_vorticity_code, 'shear_vorticity_ker
 
 def shear_vorticity(u, v, dx, dy):
     """Shear vorticity component of relative vorticity."""
-    u, v, dx, dy = (_to_gpu(a) for a in (u, v, dx, dy))
+    u, v = _to_gpu(u), _to_gpu(v)
     ny, nx = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx)), _broadcast_spacing(dy, (ny, nx))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx)
     _shear_vorticity_kern(grid, block, (u, v, dx, dy, out, np.int32(ny), np.int32(nx)))
@@ -361,8 +383,9 @@ _first_derivative_x_kern = cp.RawKernel(_first_derivative_x_code, 'first_derivat
 
 def first_derivative_x(f, dx):
     """df/dx via centered finite differences."""
-    f, dx = _to_gpu(f), _to_gpu(dx)
+    f = _to_gpu(f)
     ny, nx_ = f.shape
+    dx = _broadcast_spacing(dx, (ny, nx_))
     out = cp.zeros_like(f)
     grid, block = _grid_block(ny, nx_)
     _first_derivative_x_kern(grid, block, (f, dx, out, np.int32(ny), np.int32(nx_)))
@@ -392,8 +415,9 @@ _first_derivative_y_kern = cp.RawKernel(_first_derivative_y_code, 'first_derivat
 
 def first_derivative_y(f, dy):
     """df/dy via centered finite differences."""
-    f, dy = _to_gpu(f), _to_gpu(dy)
+    f = _to_gpu(f)
     ny, nx_ = f.shape
+    dy = _broadcast_spacing(dy, (ny, nx_))
     out = cp.zeros_like(f)
     grid, block = _grid_block(ny, nx_)
     _first_derivative_y_kern(grid, block, (f, dy, out, np.int32(ny), np.int32(nx_)))
@@ -424,8 +448,9 @@ _second_derivative_x_kern = cp.RawKernel(_second_derivative_x_code, 'second_deri
 
 def second_derivative_x(f, dx):
     """d2f/dx2 via centered finite differences."""
-    f, dx = _to_gpu(f), _to_gpu(dx)
+    f = _to_gpu(f)
     ny, nx_ = f.shape
+    dx = _broadcast_spacing(dx, (ny, nx_))
     out = cp.zeros_like(f)
     grid, block = _grid_block(ny, nx_)
     _second_derivative_x_kern(grid, block, (f, dx, out, np.int32(ny), np.int32(nx_)))
@@ -456,8 +481,9 @@ _second_derivative_y_kern = cp.RawKernel(_second_derivative_y_code, 'second_deri
 
 def second_derivative_y(f, dy):
     """d2f/dy2 via centered finite differences."""
-    f, dy = _to_gpu(f), _to_gpu(dy)
+    f = _to_gpu(f)
     ny, nx_ = f.shape
+    dy = _broadcast_spacing(dy, (ny, nx_))
     out = cp.zeros_like(f)
     grid, block = _grid_block(ny, nx_)
     _second_derivative_y_kern(grid, block, (f, dy, out, np.int32(ny), np.int32(nx_)))
@@ -491,8 +517,9 @@ _laplacian_kern = cp.RawKernel(_laplacian_code, 'laplacian_kernel')
 
 def laplacian(f, dx, dy):
     """Laplacian  d2f/dx2 + d2f/dy2."""
-    f, dx, dy = (_to_gpu(a) for a in (f, dx, dy))
+    f = _to_gpu(f)
     ny, nx_ = f.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     out = cp.zeros_like(f)
     grid, block = _grid_block(ny, nx_)
     _laplacian_kern(grid, block, (f, dx, dy, out, np.int32(ny), np.int32(nx_)))
@@ -525,8 +552,9 @@ _gradient_kern = cp.RawKernel(_gradient_code, 'gradient_kernel')
 
 def gradient(f, dx, dy):
     """Horizontal gradient  returns (df/dx, df/dy)."""
-    f, dx, dy = (_to_gpu(a) for a in (f, dx, dy))
+    f = _to_gpu(f)
     ny, nx_ = f.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     dfdx = cp.zeros_like(f)
     dfdy = cp.zeros_like(f)
     grid, block = _grid_block(ny, nx_)
@@ -562,8 +590,9 @@ _advection_kern = cp.RawKernel(_advection_code, 'advection_kernel')
 
 def advection(field, u, v, dx, dy):
     """Horizontal advection  -u*df/dx - v*df/dy."""
-    field, u, v, dx, dy = (_to_gpu(a) for a in (field, u, v, dx, dy))
+    field, u, v = _to_gpu(field), _to_gpu(u), _to_gpu(v)
     ny, nx_ = field.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     out = cp.zeros_like(field)
     grid, block = _grid_block(ny, nx_)
     _advection_kern(grid, block, (field, u, v, dx, dy, out, np.int32(ny), np.int32(nx_)))
@@ -622,8 +651,9 @@ _frontogenesis_kern = cp.RawKernel(_frontogenesis_code, 'frontogenesis_kernel')
 
 def frontogenesis(theta, u, v, dx, dy):
     """Petterssen frontogenesis function (scalar, 2D)."""
-    theta, u, v, dx, dy = (_to_gpu(a) for a in (theta, u, v, dx, dy))
+    theta, u, v = _to_gpu(theta), _to_gpu(u), _to_gpu(v)
     ny, nx_ = theta.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     out = cp.zeros_like(theta)
     grid, block = _grid_block(ny, nx_)
     _frontogenesis_kern(grid, block, (theta, u, v, dx, dy, out, np.int32(ny), np.int32(nx_)))
@@ -674,8 +704,9 @@ _q_vector_kern = cp.RawKernel(_q_vector_code, 'q_vector_kernel')
 
 def q_vector(u, v, temperature, dx, dy, pressure, Rd=287.04):
     """Q-vector components (Q1, Q2).  *pressure* is a scalar in Pa."""
-    u, v, temperature, dx, dy = (_to_gpu(a) for a in (u, v, temperature, dx, dy))
+    u, v, temperature = _to_gpu(u), _to_gpu(v), _to_gpu(temperature)
     ny, nx_ = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     q1 = cp.zeros_like(u)
     q2 = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx_)
@@ -718,8 +749,9 @@ _geostrophic_wind_kern = cp.RawKernel(_geostrophic_wind_code, 'geostrophic_wind_
 
 def geostrophic_wind(Z, f, dx, dy, g=9.80665):
     """Geostrophic wind from geopotential height.  Returns (ug, vg)."""
-    Z, f, dx, dy = (_to_gpu(a) for a in (Z, f, dx, dy))
+    Z, f = _to_gpu(Z), _to_gpu(f)
     ny, nx_ = Z.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     ug = cp.zeros_like(Z)
     vg = cp.zeros_like(Z)
     grid, block = _grid_block(ny, nx_)
@@ -764,8 +796,9 @@ _ageostrophic_wind_kern = cp.RawKernel(_ageostrophic_wind_code, 'ageostrophic_wi
 
 def ageostrophic_wind(u, v, Z, f, dx, dy, g=9.80665):
     """Ageostrophic wind.  Returns (ua, va) = (u - ug, v - vg)."""
-    u, v, Z, f, dx, dy = (_to_gpu(a) for a in (u, v, Z, f, dx, dy))
+    u, v, Z, f = _to_gpu(u), _to_gpu(v), _to_gpu(Z), _to_gpu(f)
     ny, nx_ = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     ua = cp.zeros_like(u)
     va = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx_)
@@ -836,8 +869,9 @@ def potential_vorticity_baroclinic(u, v, theta, pressure, dx, dy, f, g=9.80665):
     -------
     PV : (nz, ny, nx)
     """
-    u, v, theta, pressure, dx, dy, f = (_to_gpu(a) for a in (u, v, theta, pressure, dx, dy, f))
+    u, v, theta, pressure, f = _to_gpu(u), _to_gpu(v), _to_gpu(theta), _to_gpu(pressure), _to_gpu(f)
     nz, ny, nx_ = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx_)
     _pv_baroclinic_kern(grid, block, (u, v, theta, pressure, dx, dy, f,
@@ -879,8 +913,9 @@ _pv_barotropic_kern = cp.RawKernel(_pv_barotropic_code, 'potential_vorticity_bar
 
 def potential_vorticity_barotropic(u, v, dx, dy, f, depth):
     """Barotropic potential vorticity  (f + zeta) / depth."""
-    u, v, dx, dy, f, depth = (_to_gpu(a) for a in (u, v, dx, dy, f, depth))
+    u, v, f, depth = _to_gpu(u), _to_gpu(v), _to_gpu(f), _to_gpu(depth)
     ny, nx_ = u.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     out = cp.zeros_like(u)
     grid, block = _grid_block(ny, nx_)
     _pv_barotropic_kern(grid, block, (u, v, dx, dy, f, depth, out,
@@ -932,8 +967,9 @@ _inertial_advective_wind_kern = cp.RawKernel(_inertial_advective_wind_code,
 
 def inertial_advective_wind(ug, vg, f, dx, dy):
     """Inertial-advective wind from geostrophic wind.  Returns (u_ia, v_ia)."""
-    ug, vg, f, dx, dy = (_to_gpu(a) for a in (ug, vg, f, dx, dy))
+    ug, vg, f = _to_gpu(ug), _to_gpu(vg), _to_gpu(f)
     ny, nx_ = ug.shape
+    dx, dy = _broadcast_spacing(dx, (ny, nx_)), _broadcast_spacing(dy, (ny, nx_))
     u_ia = cp.zeros_like(ug)
     v_ia = cp.zeros_like(ug)
     grid, block = _grid_block(ny, nx_)

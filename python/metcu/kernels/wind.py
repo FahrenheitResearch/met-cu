@@ -59,7 +59,7 @@ _wind_direction_ek = cp.ElementwiseKernel(
     double rad = atan2(-u, -v);
     wdir = rad * 180.0 / M_PI;
     if (wdir < 0.0) wdir += 360.0;
-    // Calm winds → 0
+    // Calm winds -> 0
     if (u == 0.0 && v == 0.0) wdir = 0.0;
     """,
     "wind_direction_kernel",
@@ -146,7 +146,7 @@ def normal_component(u, v, start, end):
     mag = math.sqrt(dx * dx + dy * dy)
     if mag < 1e-12:
         return cp.zeros_like(_to_cp(u))
-    # Normal is perpendicular to tangent: tangent=(dx,dy) → normal=(-dy,dx)
+    # Normal is perpendicular to tangent: tangent=(dx,dy) -> normal=(-dy,dx)
     nx = -dy / mag
     ny = dx / mag
     return _normal_component_ek(_to_cp(u), _to_cp(v), cp.float64(nx), cp.float64(ny))
@@ -328,8 +328,8 @@ _bulk_shear_kern = _bulk_shear_mod.get_function("bulk_shear_kernel")
 def bulk_shear(u, v, height, bottom, top):
     """Bulk wind shear (u_shear, v_shear) over a height layer.
 
-    For 1-D profile inputs (nlevels,) → scalar pair.
-    For 2-D column inputs (ncols, nlevels) → arrays of size ncols.
+    For 1-D profile inputs (nlevels,) -> scalar pair.
+    For 2-D column inputs (ncols, nlevels) -> arrays of size ncols.
     """
     u_d = _to_cp(u)
     v_d = _to_cp(v)
@@ -929,7 +929,7 @@ _scp_ek = cp.ElementwiseKernel(
     "float64 mucape, float64 srh, float64 shear",
     "float64 scp",
     r"""
-    scp = (mucape / 1000.0) * (srh / 50.0) * (shear / 20.0);
+    scp = (mucape / 1000.0) * (srh / 50.0) * (shear / 30.0);
     if (scp < 0.0) scp = 0.0;
     """,
     "supercell_composite_parameter_kernel",

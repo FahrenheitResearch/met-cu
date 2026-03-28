@@ -23,182 +23,325 @@ import cupy as cp
 import numpy as np
 
 from metcu.utils import to_gpu, to_cpu, strip_units
+
+# --- thermo kernels ---
 from metcu.kernels.thermo import (
-    potential_temperature_kernel,
-    equivalent_potential_temperature_kernel,
-    saturation_vapor_pressure_kernel,
-    saturation_mixing_ratio_kernel,
-    wet_bulb_temperature_kernel,
-    dewpoint_from_rh_kernel,
-    rh_from_dewpoint_kernel,
-    virtual_temperature_kernel,
-    virtual_temperature_from_dewpoint_kernel,
-    mixing_ratio_kernel,
-    density_kernel,
-    dewpoint_kernel,
-    dewpoint_from_specific_humidity_kernel,
-    dry_lapse_kernel,
-    dry_static_energy_kernel,
-    exner_function_kernel,
-    moist_lapse_kernel,
-    moist_static_energy_kernel,
-    parcel_profile_kernel,
-    temperature_from_potential_temperature_kernel,
-    vertical_velocity_kernel,
-    vertical_velocity_pressure_kernel,
-    virtual_potential_temperature_kernel,
-    wet_bulb_potential_temperature_kernel,
-    saturation_equivalent_potential_temperature_kernel,
-    vapor_pressure_kernel,
-    specific_humidity_from_mixing_ratio_kernel,
-    mixing_ratio_from_relative_humidity_kernel,
-    mixing_ratio_from_specific_humidity_kernel,
-    relative_humidity_from_mixing_ratio_kernel,
-    relative_humidity_from_specific_humidity_kernel,
-    specific_humidity_from_dewpoint_kernel,
-    frost_point_kernel,
-    heat_index_kernel,
-    windchill_kernel,
-    apparent_temperature_kernel,
-    moist_air_gas_constant_kernel,
-    moist_air_specific_heat_pressure_kernel,
-    moist_air_poisson_exponent_kernel,
-    water_latent_heat_vaporization_kernel,
-    water_latent_heat_melting_kernel,
-    water_latent_heat_sublimation_kernel,
-    relative_humidity_wet_psychrometric_kernel,
-    psychrometric_vapor_pressure_kernel,
-    add_height_to_pressure_kernel,
-    add_pressure_to_height_kernel,
-    thickness_hydrostatic_kernel,
-    scale_height_kernel,
-    geopotential_to_height_kernel,
-    height_to_geopotential_kernel,
-    pressure_to_height_std_kernel,
-    height_to_pressure_std_kernel,
-    altimeter_to_station_pressure_kernel,
-    station_to_altimeter_pressure_kernel,
-    altimeter_to_sea_level_pressure_kernel,
-    sigma_to_pressure_kernel,
-    coriolis_parameter_kernel,
+    potential_temperature as _k_potential_temperature,
+    equivalent_potential_temperature as _k_equivalent_potential_temperature,
+    saturation_vapor_pressure as _k_saturation_vapor_pressure,
+    saturation_mixing_ratio as _k_saturation_mixing_ratio,
+    wet_bulb_temperature as _k_wet_bulb_temperature,
+    dewpoint_from_relative_humidity as _k_dewpoint_from_relative_humidity,
+    relative_humidity_from_dewpoint as _k_relative_humidity_from_dewpoint,
+    virtual_temperature as _k_virtual_temperature,
+    virtual_temperature_from_dewpoint as _k_virtual_temperature_from_dewpoint,
+    mixing_ratio as _k_mixing_ratio,
+    density as _k_density,
+    dewpoint as _k_dewpoint,
+    dewpoint_from_specific_humidity as _k_dewpoint_from_specific_humidity,
+    dry_lapse as _k_dry_lapse,
+    dry_static_energy as _k_dry_static_energy,
+    exner_function as _k_exner_function,
+    moist_lapse as _k_moist_lapse,
+    moist_static_energy as _k_moist_static_energy,
+    parcel_profile as _k_parcel_profile,
+    temperature_from_potential_temperature as _k_temperature_from_potential_temperature,
+    vertical_velocity as _k_vertical_velocity,
+    vertical_velocity_pressure as _k_vertical_velocity_pressure,
+    virtual_potential_temperature as _k_virtual_potential_temperature,
+    wet_bulb_potential_temperature as _k_wet_bulb_potential_temperature,
+    saturation_equivalent_potential_temperature as _k_saturation_equivalent_potential_temperature,
+    vapor_pressure as _k_vapor_pressure,
+    vapor_pressure_from_mixing_ratio as _k_vapor_pressure_from_mixing_ratio,
+    specific_humidity_from_mixing_ratio as _k_specific_humidity_from_mixing_ratio,
+    mixing_ratio_from_relative_humidity as _k_mixing_ratio_from_relative_humidity,
+    mixing_ratio_from_specific_humidity as _k_mixing_ratio_from_specific_humidity,
+    relative_humidity_from_mixing_ratio as _k_relative_humidity_from_mixing_ratio,
+    relative_humidity_from_specific_humidity as _k_relative_humidity_from_specific_humidity,
+    specific_humidity_from_dewpoint as _k_specific_humidity_from_dewpoint,
+    frost_point as _k_frost_point,
+    heat_index as _k_heat_index,
+    windchill as _k_windchill,
+    apparent_temperature as _k_apparent_temperature,
+    moist_air_gas_constant as _k_moist_air_gas_constant,
+    moist_air_specific_heat_pressure as _k_moist_air_specific_heat_pressure,
+    moist_air_poisson_exponent as _k_moist_air_poisson_exponent,
+    water_latent_heat_vaporization as _k_water_latent_heat_vaporization,
+    water_latent_heat_melting as _k_water_latent_heat_melting,
+    water_latent_heat_sublimation as _k_water_latent_heat_sublimation,
+    psychrometric_vapor_pressure as _k_psychrometric_vapor_pressure,
+    add_height_to_pressure as _k_add_height_to_pressure,
+    add_pressure_to_height as _k_add_pressure_to_height,
+    thickness_hydrostatic as _k_thickness_hydrostatic,
+    scale_height as _k_scale_height,
+    geopotential_to_height as _k_geopotential_to_height,
+    height_to_geopotential as _k_height_to_geopotential,
+    pressure_to_height_std as _k_pressure_to_height_std,
+    height_to_pressure_std as _k_height_to_pressure_std,
+    altimeter_to_station_pressure as _k_altimeter_to_station_pressure,
+    station_to_altimeter_pressure as _k_station_to_altimeter_pressure,
+    altimeter_to_sea_level_pressure as _k_altimeter_to_sea_level_pressure,
+    sigma_to_pressure as _k_sigma_to_pressure,
+    montgomery_streamfunction as _k_montgomery_streamfunction,
+    cape_cin as _k_cape_cin,
+    lcl as _k_lcl,
+    lfc as _k_lfc,
+    el as _k_el,
+    lifted_index as _k_lifted_index,
+    ccl as _k_ccl,
+    precipitable_water as _k_precipitable_water,
+    mixed_layer as _k_mixed_layer,
+    downdraft_cape as _k_downdraft_cape,
+    brunt_vaisala_frequency as _k_brunt_vaisala_frequency,
+    brunt_vaisala_frequency_squared as _k_brunt_vaisala_frequency_squared,
+    brunt_vaisala_period as _k_brunt_vaisala_period,
+    static_stability as _k_static_stability,
 )
+
+# --- wind kernels ---
 from metcu.kernels.wind import (
-    wind_speed_kernel,
-    wind_direction_kernel,
-    wind_components_kernel,
-    bulk_shear_kernel,
-    mean_wind_kernel,
-    storm_relative_helicity_kernel,
-    bunkers_storm_motion_kernel,
-    corfidi_storm_motion_kernel,
-    friction_velocity_kernel,
-    tke_kernel,
-    gradient_richardson_number_kernel,
+    wind_speed as _k_wind_speed,
+    wind_direction as _k_wind_direction,
+    wind_components as _k_wind_components,
+    coriolis_parameter as _k_coriolis_parameter,
+    normal_component as _k_normal_component,
+    tangential_component as _k_tangential_component,
+    friction_velocity as _k_friction_velocity,
+    tke as _k_tke,
+    bulk_shear as _k_bulk_shear,
+    mean_wind as _k_mean_wind,
+    storm_relative_helicity as _k_storm_relative_helicity,
+    bunkers_storm_motion as _k_bunkers_storm_motion,
+    corfidi_storm_motion as _k_corfidi_storm_motion,
+    critical_angle as _k_critical_angle,
+    get_layer as _k_get_layer,
+    gradient_richardson_number as _k_gradient_richardson_number,
+    significant_tornado_parameter as _k_significant_tornado_parameter,
+    supercell_composite_parameter as _k_supercell_composite_parameter,
+    compute_ship as _k_compute_ship,
+    compute_ehi as _k_compute_ehi,
+    compute_dcp as _k_compute_dcp,
+    compute_lapse_rate as _k_compute_lapse_rate,
+    bulk_richardson_number as _k_bulk_richardson_number,
+    k_index as _k_k_index,
+    total_totals as _k_total_totals,
+    cross_totals as _k_cross_totals,
+    vertical_totals as _k_vertical_totals,
+    sweat_index as _k_sweat_index,
+    showalter_index as _k_showalter_index,
+    boyden_index as _k_boyden_index,
+    galvez_davison_index as _k_galvez_davison_index,
+    fosberg_fire_weather_index as _k_fosberg_fire_weather_index,
+    haines_index as _k_haines_index,
+    hot_dry_windy as _k_hot_dry_windy,
+    significant_tornado as _k_significant_tornado,
+    freezing_rain_composite as _k_freezing_rain_composite,
+    warm_nose_check as _k_warm_nose_check,
+    dendritic_growth_zone as _k_dendritic_growth_zone,
+    convective_inhibition_depth as _k_convective_inhibition_depth,
 )
-from metcu.kernels.kinematics import (
-    divergence_kernel,
-    vorticity_kernel,
-    absolute_vorticity_kernel,
-    advection_kernel,
-    frontogenesis_kernel,
-    geostrophic_wind_kernel,
-    ageostrophic_wind_kernel,
-    potential_vorticity_baroclinic_kernel,
-    potential_vorticity_barotropic_kernel,
-    vector_derivative_kernel,
-    shearing_deformation_kernel,
-    stretching_deformation_kernel,
-    total_deformation_kernel,
-    curvature_vorticity_kernel,
-    shear_vorticity_kernel,
-    q_vector_kernel,
-    inertial_advective_wind_kernel,
-    advection_3d_kernel,
-    geospatial_gradient_kernel,
-    geospatial_laplacian_kernel,
-    kinematic_flux_kernel,
-    absolute_momentum_kernel,
-    normal_component_kernel,
-    tangential_component_kernel,
-    cross_section_components_kernel,
-    lat_lon_grid_deltas_kernel,
-)
-from metcu.kernels.smooth import (
-    smooth_gaussian_kernel,
-    smooth_rectangular_kernel,
-    smooth_circular_kernel,
-    smooth_n_point_kernel,
-    smooth_window_kernel,
-    gradient_x_kernel,
-    gradient_y_kernel,
-    laplacian_kernel,
-    first_derivative_kernel,
-    second_derivative_kernel,
-)
-from metcu.kernels.sounding import (
-    lfc_kernel,
-    el_kernel,
-    lcl_kernel,
-    cape_cin_kernel,
-    surface_based_cape_cin_kernel,
-    mixed_layer_cape_cin_kernel,
-    most_unstable_cape_cin_kernel,
-    downdraft_cape_kernel,
-    showalter_index_kernel,
-    k_index_kernel,
-    total_totals_kernel,
-    cross_totals_kernel,
-    vertical_totals_kernel,
-    sweat_index_kernel,
-    lifted_index_kernel,
-    ccl_kernel,
-    precipitable_water_kernel,
-    brunt_vaisala_frequency_kernel,
-    brunt_vaisala_period_kernel,
-    brunt_vaisala_frequency_squared_kernel,
-    static_stability_kernel,
-    parcel_profile_with_lcl_kernel,
-    get_layer_kernel,
-    get_layer_heights_kernel,
-    mixed_layer_kernel,
-    mean_pressure_weighted_kernel,
-    get_mixed_layer_parcel_kernel,
-    get_most_unstable_parcel_kernel,
-    isentropic_interpolation_kernel,
-    thickness_hydrostatic_from_rh_kernel,
-    convective_inhibition_depth_kernel,
-    montgomery_streamfunction_kernel,
-)
-from metcu.kernels.severe import (
-    significant_tornado_parameter_kernel,
-    supercell_composite_parameter_kernel,
-    critical_angle_kernel,
-    boyden_index_kernel,
-    bulk_richardson_number_kernel,
-    dendritic_growth_zone_kernel,
-    fosberg_fire_weather_index_kernel,
-    freezing_rain_composite_kernel,
-    haines_index_kernel,
-    hot_dry_windy_kernel,
-    warm_nose_check_kernel,
-    galvez_davison_index_kernel,
-)
+
+# --- grid kernels ---
 from metcu.kernels.grid import (
-    compute_cape_cin_kernel,
-    compute_srh_kernel,
-    compute_shear_kernel,
-    compute_lapse_rate_kernel,
-    compute_pw_kernel,
-    compute_stp_kernel,
-    compute_scp_kernel,
-    compute_ehi_kernel,
-    compute_ship_kernel,
-    compute_dcp_kernel,
-    compute_grid_scp_kernel,
-    compute_grid_critical_angle_kernel,
-    composite_reflectivity_kernel,
-    composite_reflectivity_from_hydrometeors_kernel,
+    divergence as _k_divergence,
+    vorticity as _k_vorticity,
+    absolute_vorticity as _k_absolute_vorticity,
+    advection as _k_advection,
+    frontogenesis as _k_frontogenesis,
+    geostrophic_wind as _k_geostrophic_wind,
+    ageostrophic_wind as _k_ageostrophic_wind,
+    potential_vorticity_baroclinic as _k_potential_vorticity_baroclinic,
+    potential_vorticity_barotropic as _k_potential_vorticity_barotropic,
+    shearing_deformation as _k_shearing_deformation,
+    stretching_deformation as _k_stretching_deformation,
+    total_deformation as _k_total_deformation,
+    curvature_vorticity as _k_curvature_vorticity,
+    shear_vorticity as _k_shear_vorticity,
+    q_vector as _k_q_vector,
+    inertial_advective_wind as _k_inertial_advective_wind,
+    lat_lon_grid_deltas as _k_lat_lon_grid_deltas,
+    smooth_gaussian as _k_smooth_gaussian,
+    smooth_rectangular as _k_smooth_rectangular,
+    smooth_circular as _k_smooth_circular,
+    smooth_n_point as _k_smooth_n_point,
+    smooth_window as _k_smooth_window,
+    first_derivative_x as _k_first_derivative_x,
+    first_derivative_y as _k_first_derivative_y,
+    second_derivative_x as _k_second_derivative_x,
+    second_derivative_y as _k_second_derivative_y,
+    laplacian as _k_laplacian,
+    gradient as _k_gradient,
+    composite_reflectivity as _k_composite_reflectivity,
+    get_layer_heights as _k_get_layer_heights,
+    mean_pressure_weighted as _k_mean_pressure_weighted,
+    isentropic_interpolation as _k_isentropic_interpolation,
 )
+
+
+# ---------------------------------------------------------------------------
+# Inline stubs for kernel functions not yet in the kernel modules
+# ---------------------------------------------------------------------------
+
+def _STUB_thickness_from_rh(p, t, rh):
+    """Hypsometric thickness from P, T, RH -- inline fallback."""
+    import cupy as cp
+    w = _k_mixing_ratio_from_relative_humidity(p, t, rh)
+    tv = t * (1.0 + w / 0.6219569100577033) / (1.0 + w)
+    if float(p[0]) < float(p[-1]):
+        p = p[::-1]
+        tv = tv[::-1]
+    return -(287.05 / 9.80665) * cp.trapz(tv, cp.log(p))
+
+
+def _STUB_parcel_profile_with_lcl(p, t, td):
+    """Parcel profile with LCL inserted -- inline fallback."""
+    prof = _k_parcel_profile(p, t, td)
+    lcl_p, lcl_t = _k_lcl(float(p[0]), t, td)
+    return prof, (lcl_p, lcl_t)
+
+
+def _STUB_get_mixed_layer_parcel(p, t, td, d):
+    """Mixed layer parcel -- inline fallback."""
+    ml_t = _k_mixed_layer(p, t, d)
+    ml_td = _k_mixed_layer(p, td, d)
+    return (p[0], ml_t, ml_td)
+
+
+def _STUB_get_most_unstable_parcel(p, t, td, d):
+    """Most unstable parcel -- inline fallback."""
+    import cupy as cp
+    theta_e = _k_equivalent_potential_temperature(p, t, td)
+    p_bot = float(p[0])
+    mask = p >= (p_bot - d)
+    idx = int(cp.argmax(theta_e * mask))
+    return (p[idx], t[idx], td[idx], idx)
+
+
+def _STUB_vector_derivative(u_arr, v_arr, dx_val, dy_val):
+    """All four partial derivatives of a 2-D vector field."""
+    dudx = _k_first_derivative_x(u_arr, dx_val)
+    dudy = _k_first_derivative_y(u_arr, dy_val)
+    dvdx = _k_first_derivative_x(v_arr, dx_val)
+    dvdy = _k_first_derivative_y(v_arr, dy_val)
+    return (dudx, dudy, dvdx, dvdy)
+
+
+def _STUB_kinematic_flux(v_arr, s_arr):
+    """Kinematic flux -- element-wise product."""
+    return v_arr * s_arr
+
+
+def _STUB_absolute_momentum(u_arr, lat_arr, yd):
+    """Absolute momentum -- u + f*y."""
+    import cupy as cp
+    f = 2.0 * 7.2921159e-5 * cp.sin(cp.deg2rad(lat_arr))
+    return u_arr + f * yd
+
+
+def _STUB_cross_section_components(u_arr, v_arr, slat, slon, elat, elon):
+    """Decompose (u,v) into parallel/perpendicular components."""
+    import math
+    dlat = elat - slat
+    dlon = elon - slon
+    mag = math.sqrt(dlat**2 + dlon**2)
+    if mag < 1e-12:
+        return u_arr * 0.0, v_arr * 0.0
+    tx, ty = dlon / mag, dlat / mag
+    parallel = u_arr * tx + v_arr * ty
+    perpendicular = -u_arr * ty + v_arr * tx
+    return parallel, perpendicular
+
+
+def _STUB_advection_3d(s, u_arr, v_arr, w_arr, dx_val, dy_val, dz_val):
+    """3-D advection -- inline fallback."""
+    import cupy as cp
+    dsdz, dsdy, dsdx = cp.gradient(s, dz_val, dy_val, dx_val)
+    return -(u_arr * dsdx + v_arr * dsdy + w_arr * dsdz)
+
+
+def _STUB_geospatial_gradient(d, lat, lon):
+    """Gradient on lat/lon grid -- inline fallback."""
+    import cupy as cp
+    R = 6371229.0
+    lat_rad = cp.deg2rad(lat)
+    lon_rad = cp.deg2rad(lon)
+    dy = R * cp.gradient(lat_rad, axis=0)
+    dx = R * cp.cos(lat_rad) * cp.gradient(lon_rad, axis=1)
+    ddy = cp.gradient(d, axis=0) / dy
+    ddx = cp.gradient(d, axis=1) / dx
+    return (ddx, ddy)
+
+
+def _STUB_geospatial_laplacian(d, lat, lon):
+    """Laplacian on lat/lon grid -- inline fallback."""
+    import cupy as cp
+    R = 6371229.0
+    lat_rad = cp.deg2rad(lat)
+    lon_rad = cp.deg2rad(lon)
+    dy = R * cp.gradient(lat_rad, axis=0)
+    dx = R * cp.cos(lat_rad) * cp.gradient(lon_rad, axis=1)
+    d2dx2 = cp.gradient(cp.gradient(d, axis=1) / dx, axis=1) / dx
+    d2dy2 = cp.gradient(cp.gradient(d, axis=0) / dy, axis=0) / dy
+    return d2dx2 + d2dy2
+
+
+def _STUB_first_derivative(d_arr, ds, axis):
+    """First derivative along a chosen axis."""
+    if axis == 0:
+        return _k_first_derivative_y(d_arr, ds)
+    else:
+        return _k_first_derivative_x(d_arr, ds)
+
+
+def _STUB_second_derivative(d_arr, ds, axis):
+    """Second derivative along a chosen axis."""
+    if axis == 0:
+        return _k_second_derivative_y(d_arr, ds)
+    else:
+        return _k_second_derivative_x(d_arr, ds)
+
+
+def _STUB_compute_cape_cin(*args, **kwargs):
+    """Grid CAPE/CIN -- not yet in kernels."""
+    raise NotImplementedError("compute_cape_cin grid kernel not yet available")
+
+
+def _STUB_compute_srh(*args, **kwargs):
+    """Grid SRH -- not yet in kernels."""
+    raise NotImplementedError("compute_srh grid kernel not yet available")
+
+
+def _STUB_compute_shear(*args, **kwargs):
+    """Grid shear -- not yet in kernels."""
+    raise NotImplementedError("compute_shear grid kernel not yet available")
+
+
+def _STUB_compute_pw(*args, **kwargs):
+    """Grid PW -- not yet in kernels."""
+    raise NotImplementedError("compute_pw grid kernel not yet available")
+
+
+def _STUB_compute_grid_scp(mc, s, sh, ci):
+    """Enhanced SCP with CIN term."""
+    import cupy as cp
+    scp = _k_supercell_composite_parameter(mc, s, sh)
+    cin_term = cp.where(ci > -40.0, 1.0, -40.0 / ci)
+    return scp * cin_term
+
+
+def _STUB_compute_grid_critical_angle(us, vs, ush, vsh):
+    """Critical angle between two vectors on a 2D grid."""
+    import cupy as cp
+    dot = us * ush + vs * vsh
+    mag1 = cp.sqrt(us**2 + vs**2)
+    mag2 = cp.sqrt(ush**2 + vsh**2)
+    cos_angle = dot / (mag1 * mag2 + 1e-12)
+    return cp.rad2deg(cp.arccos(cp.clip(cos_angle, -1.0, 1.0)))
+
+
+def _STUB_composite_refl_hydro(*args, **kwargs):
+    """Composite reflectivity from hydrometeors -- not yet in kernels."""
+    raise NotImplementedError("composite_reflectivity_from_hydrometeors not yet available")
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +413,7 @@ def potential_temperature(pressure, temperature):
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    return potential_temperature_kernel(p, t)
+    return _k_potential_temperature(p, t)
 
 
 def equivalent_potential_temperature(pressure, temperature, dewpoint):
@@ -289,7 +432,7 @@ def equivalent_potential_temperature(pressure, temperature, dewpoint):
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     td = _to_gpu(dewpoint)
-    return equivalent_potential_temperature_kernel(p, t, td)
+    return _k_equivalent_potential_temperature(p, t, td)
 
 
 def saturation_vapor_pressure(temperature, phase="liquid"):
@@ -306,7 +449,7 @@ def saturation_vapor_pressure(temperature, phase="liquid"):
     cupy.ndarray (Pa)
     """
     t = _to_gpu(temperature)
-    return saturation_vapor_pressure_kernel(t, phase)
+    return _k_saturation_vapor_pressure(t) * 100.0  # hPa -> Pa
 
 
 def saturation_mixing_ratio(pressure, temperature, phase="liquid"):
@@ -324,7 +467,7 @@ def saturation_mixing_ratio(pressure, temperature, phase="liquid"):
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    return saturation_mixing_ratio_kernel(p, t, phase)
+    return _k_saturation_mixing_ratio(p, t)
 
 
 def wet_bulb_temperature(pressure, temperature, dewpoint):
@@ -343,7 +486,7 @@ def wet_bulb_temperature(pressure, temperature, dewpoint):
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     td = _to_gpu(dewpoint)
-    return wet_bulb_temperature_kernel(p, t, td)
+    return _k_wet_bulb_temperature(p, t, td)
 
 
 def dewpoint_from_relative_humidity(temperature, relative_humidity):
@@ -360,7 +503,7 @@ def dewpoint_from_relative_humidity(temperature, relative_humidity):
     """
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
-    return dewpoint_from_rh_kernel(t, rh)
+    return _k_dewpoint_from_relative_humidity(t, rh)
 
 
 def relative_humidity_from_dewpoint(temperature, dewpoint, phase="liquid"):
@@ -378,7 +521,7 @@ def relative_humidity_from_dewpoint(temperature, dewpoint, phase="liquid"):
     """
     t = _to_gpu(temperature)
     td = _to_gpu(dewpoint)
-    return rh_from_dewpoint_kernel(t, td, phase)
+    return _k_relative_humidity_from_dewpoint(t, td) / 100.0  # percent -> fractional
 
 
 def virtual_temperature(temperature, pressure_or_mixing_ratio, dewpoint=None,
@@ -408,7 +551,7 @@ def virtual_temperature(temperature, pressure_or_mixing_ratio, dewpoint=None,
         tv_k = t_k * (1.0 + pmr / eps) / (1.0 + pmr)
         return tv_k - 273.15
     td = _to_gpu(dewpoint)
-    return virtual_temperature_kernel(t, pmr, td)
+    return _k_virtual_temperature_from_dewpoint(pmr, t, td)
 
 
 def virtual_temperature_from_dewpoint(pressure, temperature, dewpoint,
@@ -428,7 +571,7 @@ def virtual_temperature_from_dewpoint(pressure, temperature, dewpoint,
     t = _to_gpu(temperature)
     td = _to_gpu(dewpoint)
     p = _to_gpu(pressure)
-    return virtual_temperature_from_dewpoint_kernel(t, td, p)
+    return _k_virtual_temperature_from_dewpoint(p, t, td)
 
 
 def mixing_ratio(partial_press_or_pressure, total_press_or_temperature,
@@ -450,7 +593,7 @@ def mixing_ratio(partial_press_or_pressure, total_press_or_temperature,
     """
     a = _to_gpu(partial_press_or_pressure)
     b = _to_gpu(total_press_or_temperature)
-    return mixing_ratio_kernel(a, b, molecular_weight_ratio)
+    return _k_mixing_ratio(a, b, molecular_weight_ratio)
 
 
 def density(pressure, temperature, mixing_ratio_val):
@@ -469,7 +612,7 @@ def density(pressure, temperature, mixing_ratio_val):
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     w = _to_gpu(mixing_ratio_val)
-    return density_kernel(p, t, w)
+    return _k_density(p, t, w)
 
 
 def dewpoint(vapor_pressure_val):
@@ -484,7 +627,7 @@ def dewpoint(vapor_pressure_val):
     cupy.ndarray (Celsius)
     """
     e = _to_gpu(vapor_pressure_val)
-    return dewpoint_kernel(e)
+    return _k_dewpoint(e)
 
 
 def dewpoint_from_specific_humidity(pressure, specific_humidity):
@@ -501,7 +644,7 @@ def dewpoint_from_specific_humidity(pressure, specific_humidity):
     """
     p = _to_gpu(pressure)
     q = _to_gpu(specific_humidity)
-    return dewpoint_from_specific_humidity_kernel(p, q)
+    return _k_dewpoint_from_specific_humidity(p, q)
 
 
 def dry_lapse(pressure, t_surface):
@@ -518,7 +661,8 @@ def dry_lapse(pressure, t_surface):
     """
     p = _1d(pressure)
     t = _scalar(t_surface)
-    return dry_lapse_kernel(p, t)
+    p_ref = float(p[0])
+    return _k_dry_lapse(p, p_ref, t)
 
 
 def dry_static_energy(height, temperature):
@@ -535,7 +679,7 @@ def dry_static_energy(height, temperature):
     """
     h = _to_gpu(height)
     t = _to_gpu(temperature)
-    return dry_static_energy_kernel(h, t)
+    return _k_dry_static_energy(h, t)
 
 
 def exner_function(pressure):
@@ -550,7 +694,7 @@ def exner_function(pressure):
     cupy.ndarray (dimensionless)
     """
     p = _to_gpu(pressure)
-    return exner_function_kernel(p)
+    return _k_exner_function(p)
 
 
 def moist_lapse(pressure, t_start, reference_pressure=None):
@@ -568,8 +712,7 @@ def moist_lapse(pressure, t_start, reference_pressure=None):
     """
     p = _1d(pressure)
     t = _scalar(t_start)
-    ref_p = _scalar(reference_pressure) if reference_pressure is not None else None
-    return moist_lapse_kernel(p, t, ref_p)
+    return _k_moist_lapse(p, t)
 
 
 def moist_static_energy(height, temperature, specific_humidity):
@@ -588,7 +731,7 @@ def moist_static_energy(height, temperature, specific_humidity):
     h = _to_gpu(height)
     t = _to_gpu(temperature)
     q = _to_gpu(specific_humidity)
-    return moist_static_energy_kernel(h, t, q)
+    return _k_moist_static_energy(h, t, q)
 
 
 def parcel_profile(pressure, temperature, dewpoint_val):
@@ -607,7 +750,7 @@ def parcel_profile(pressure, temperature, dewpoint_val):
     p = _1d(pressure)
     t = _scalar(temperature)
     td = _scalar(dewpoint_val)
-    return parcel_profile_kernel(p, t, td)
+    return _k_parcel_profile(p, t, td)
 
 
 def temperature_from_potential_temperature(pressure, theta):
@@ -624,7 +767,7 @@ def temperature_from_potential_temperature(pressure, theta):
     """
     p = _to_gpu(pressure)
     th = _to_gpu(theta)
-    return temperature_from_potential_temperature_kernel(p, th)
+    return _k_temperature_from_potential_temperature(p, th)
 
 
 def vertical_velocity(omega, pressure, temperature):
@@ -643,7 +786,7 @@ def vertical_velocity(omega, pressure, temperature):
     o = _to_gpu(omega)
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    return vertical_velocity_kernel(o, p, t)
+    return _k_vertical_velocity(o, p, t)
 
 
 def vertical_velocity_pressure(w, pressure, temperature):
@@ -662,7 +805,7 @@ def vertical_velocity_pressure(w, pressure, temperature):
     ww = _to_gpu(w)
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    return vertical_velocity_pressure_kernel(ww, p, t)
+    return _k_vertical_velocity_pressure(ww, p, t)
 
 
 def virtual_potential_temperature(pressure, temperature, mixing_ratio_val):
@@ -681,7 +824,7 @@ def virtual_potential_temperature(pressure, temperature, mixing_ratio_val):
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     w = _to_gpu(mixing_ratio_val)
-    return virtual_potential_temperature_kernel(p, t, w)
+    return _k_virtual_potential_temperature(p, t, w)
 
 
 def wet_bulb_potential_temperature(pressure, temperature, dewpoint_val):
@@ -700,7 +843,7 @@ def wet_bulb_potential_temperature(pressure, temperature, dewpoint_val):
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     td = _to_gpu(dewpoint_val)
-    return wet_bulb_potential_temperature_kernel(p, t, td)
+    return _k_wet_bulb_potential_temperature(p, t, td)
 
 
 def saturation_equivalent_potential_temperature(pressure, temperature):
@@ -717,7 +860,7 @@ def saturation_equivalent_potential_temperature(pressure, temperature):
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    return saturation_equivalent_potential_temperature_kernel(p, t)
+    return _k_saturation_equivalent_potential_temperature(p, t)
 
 
 def vapor_pressure(pressure_or_dewpoint, mixing_ratio_val=None,
@@ -738,7 +881,7 @@ def vapor_pressure(pressure_or_dewpoint, mixing_ratio_val=None,
         w = _to_gpu(mixing_ratio_val)
         return p * w / (molecular_weight_ratio + w)
     td = _to_gpu(pressure_or_dewpoint)
-    return vapor_pressure_kernel(td)
+    return _k_vapor_pressure(td) * 100.0  # hPa -> Pa
 
 
 def specific_humidity_from_mixing_ratio(mixing_ratio_val):
@@ -753,7 +896,7 @@ def specific_humidity_from_mixing_ratio(mixing_ratio_val):
     cupy.ndarray (kg/kg)
     """
     w = _to_gpu(mixing_ratio_val)
-    return specific_humidity_from_mixing_ratio_kernel(w)
+    return _k_specific_humidity_from_mixing_ratio(w)
 
 
 def mixing_ratio_from_relative_humidity(pressure, temperature, relative_humidity):
@@ -772,7 +915,7 @@ def mixing_ratio_from_relative_humidity(pressure, temperature, relative_humidity
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
-    return mixing_ratio_from_relative_humidity_kernel(p, t, rh)
+    return _k_mixing_ratio_from_relative_humidity(p, t, rh)
 
 
 def mixing_ratio_from_specific_humidity(specific_humidity):
@@ -787,7 +930,7 @@ def mixing_ratio_from_specific_humidity(specific_humidity):
     cupy.ndarray (kg/kg)
     """
     q = _to_gpu(specific_humidity)
-    return mixing_ratio_from_specific_humidity_kernel(q)
+    return _k_mixing_ratio_from_specific_humidity(q)
 
 
 def relative_humidity_from_mixing_ratio(pressure, temperature, mixing_ratio_val):
@@ -806,7 +949,7 @@ def relative_humidity_from_mixing_ratio(pressure, temperature, mixing_ratio_val)
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     w = _to_gpu(mixing_ratio_val)
-    return relative_humidity_from_mixing_ratio_kernel(p, t, w)
+    return _k_relative_humidity_from_mixing_ratio(p, t, w)
 
 
 def relative_humidity_from_specific_humidity(pressure, temperature, specific_humidity):
@@ -825,7 +968,7 @@ def relative_humidity_from_specific_humidity(pressure, temperature, specific_hum
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     q = _to_gpu(specific_humidity)
-    return relative_humidity_from_specific_humidity_kernel(p, t, q)
+    return _k_relative_humidity_from_specific_humidity(p, t, q)
 
 
 def specific_humidity_from_dewpoint(pressure, dewpoint_val):
@@ -842,7 +985,7 @@ def specific_humidity_from_dewpoint(pressure, dewpoint_val):
     """
     p = _to_gpu(pressure)
     td = _to_gpu(dewpoint_val)
-    return specific_humidity_from_dewpoint_kernel(p, td)
+    return _k_specific_humidity_from_dewpoint(p, td)
 
 
 def frost_point(temperature, relative_humidity):
@@ -859,7 +1002,7 @@ def frost_point(temperature, relative_humidity):
     """
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
-    return frost_point_kernel(t, rh)
+    return _k_frost_point(t, rh)
 
 
 def moist_air_gas_constant(mixing_ratio_kgkg):
@@ -874,7 +1017,7 @@ def moist_air_gas_constant(mixing_ratio_kgkg):
     cupy.ndarray (J/(kg*K))
     """
     w = _to_gpu(mixing_ratio_kgkg)
-    return moist_air_gas_constant_kernel(w)
+    return _k_moist_air_gas_constant(w)
 
 
 def moist_air_specific_heat_pressure(mixing_ratio_kgkg):
@@ -889,7 +1032,7 @@ def moist_air_specific_heat_pressure(mixing_ratio_kgkg):
     cupy.ndarray (J/(kg*K))
     """
     w = _to_gpu(mixing_ratio_kgkg)
-    return moist_air_specific_heat_pressure_kernel(w)
+    return _k_moist_air_specific_heat_pressure(w)
 
 
 def moist_air_poisson_exponent(mixing_ratio_kgkg):
@@ -904,7 +1047,7 @@ def moist_air_poisson_exponent(mixing_ratio_kgkg):
     cupy.ndarray (dimensionless)
     """
     w = _to_gpu(mixing_ratio_kgkg)
-    return moist_air_poisson_exponent_kernel(w)
+    return _k_moist_air_poisson_exponent(w)
 
 
 def water_latent_heat_vaporization(temperature):
@@ -919,7 +1062,7 @@ def water_latent_heat_vaporization(temperature):
     cupy.ndarray (J/kg)
     """
     t = _to_gpu(temperature)
-    return water_latent_heat_vaporization_kernel(t)
+    return _k_water_latent_heat_vaporization(t)
 
 
 def water_latent_heat_melting(temperature):
@@ -934,7 +1077,7 @@ def water_latent_heat_melting(temperature):
     cupy.ndarray (J/kg)
     """
     t = _to_gpu(temperature)
-    return water_latent_heat_melting_kernel(t)
+    return _k_water_latent_heat_melting(t)
 
 
 def water_latent_heat_sublimation(temperature):
@@ -949,7 +1092,7 @@ def water_latent_heat_sublimation(temperature):
     cupy.ndarray (J/kg)
     """
     t = _to_gpu(temperature)
-    return water_latent_heat_sublimation_kernel(t)
+    return _k_water_latent_heat_sublimation(t)
 
 
 def relative_humidity_wet_psychrometric(temperature, wet_bulb, pressure):
@@ -968,7 +1111,9 @@ def relative_humidity_wet_psychrometric(temperature, wet_bulb, pressure):
     t = _to_gpu(temperature)
     tw = _to_gpu(wet_bulb)
     p = _to_gpu(pressure)
-    return relative_humidity_wet_psychrometric_kernel(t, tw, p)
+    e = _k_psychrometric_vapor_pressure(t, tw, p)
+    es = _k_saturation_vapor_pressure(t)
+    return (e / es) * 100.0
 
 
 def psychrometric_vapor_pressure(temperature, wet_bulb, pressure):
@@ -987,7 +1132,7 @@ def psychrometric_vapor_pressure(temperature, wet_bulb, pressure):
     t = _to_gpu(temperature)
     tw = _to_gpu(wet_bulb)
     p = _to_gpu(pressure)
-    return psychrometric_vapor_pressure_kernel(t, tw, p)
+    return _k_psychrometric_vapor_pressure(t, tw, p)
 
 
 def psychrometric_vapor_pressure_wet(temperature, wet_bulb, pressure):
@@ -1009,7 +1154,7 @@ def add_height_to_pressure(pressure, delta_height):
     """
     p = _to_gpu(pressure)
     dh = _to_gpu(delta_height)
-    return add_height_to_pressure_kernel(p, dh)
+    return _k_add_height_to_pressure(p, dh)
 
 
 def add_pressure_to_height(height, delta_pressure):
@@ -1026,7 +1171,7 @@ def add_pressure_to_height(height, delta_pressure):
     """
     h = _to_gpu(height)
     dp = _to_gpu(delta_pressure)
-    return add_pressure_to_height_kernel(h, dp)
+    return _k_add_pressure_to_height(h, dp)
 
 
 def thickness_hydrostatic(pressure_or_bottom, temperature_or_top, t_mean=None,
@@ -1046,7 +1191,7 @@ def thickness_hydrostatic(pressure_or_bottom, temperature_or_top, t_mean=None,
         p_bot = _to_gpu(pressure_or_bottom)
         p_top_val = _to_gpu(temperature_or_top)
         tm = _to_gpu(t_mean)
-        return thickness_hydrostatic_kernel(p_bot, p_top_val, tm)
+        return _k_thickness_hydrostatic(p_bot, p_top_val, tm)
     # Profile form
     p = _1d(pressure_or_bottom)
     t = _1d(temperature_or_top)
@@ -1077,7 +1222,7 @@ def thickness_hydrostatic_from_relative_humidity(pressure, temperature,
     p = _1d(pressure)
     t = _1d(temperature)
     rh = _1d(relative_humidity)
-    return thickness_hydrostatic_from_rh_kernel(p, t, rh)
+    return _STUB_thickness_from_rh(p, t, rh)
 
 
 def scale_height(temperature):
@@ -1092,7 +1237,7 @@ def scale_height(temperature):
     cupy.ndarray (m)
     """
     t = _to_gpu(temperature)
-    return scale_height_kernel(t)
+    return _k_scale_height(t)
 
 
 def geopotential_to_height(geopotential):
@@ -1107,7 +1252,7 @@ def geopotential_to_height(geopotential):
     cupy.ndarray (m)
     """
     gp = _to_gpu(geopotential)
-    return geopotential_to_height_kernel(gp)
+    return _k_geopotential_to_height(gp)
 
 
 def height_to_geopotential(height):
@@ -1122,7 +1267,7 @@ def height_to_geopotential(height):
     cupy.ndarray (m^2/s^2)
     """
     h = _to_gpu(height)
-    return height_to_geopotential_kernel(h)
+    return _k_height_to_geopotential(h)
 
 
 def weighted_continuous_average(values, weights):
@@ -1176,7 +1321,7 @@ def pressure_to_height_std(pressure):
     cupy.ndarray (m)
     """
     p = _to_gpu(pressure)
-    return pressure_to_height_std_kernel(p)
+    return _k_pressure_to_height_std(p)
 
 
 def height_to_pressure_std(height):
@@ -1191,7 +1336,7 @@ def height_to_pressure_std(height):
     cupy.ndarray (hPa)
     """
     h = _to_gpu(height)
-    return height_to_pressure_std_kernel(h)
+    return _k_height_to_pressure_std(h)
 
 
 def altimeter_to_station_pressure(altimeter, elevation):
@@ -1208,7 +1353,7 @@ def altimeter_to_station_pressure(altimeter, elevation):
     """
     a = _to_gpu(altimeter)
     e = _to_gpu(elevation)
-    return altimeter_to_station_pressure_kernel(a, e)
+    return _k_altimeter_to_station_pressure(a, e)
 
 
 def station_to_altimeter_pressure(station_pressure, elevation):
@@ -1225,7 +1370,7 @@ def station_to_altimeter_pressure(station_pressure, elevation):
     """
     s = _to_gpu(station_pressure)
     e = _to_gpu(elevation)
-    return station_to_altimeter_pressure_kernel(s, e)
+    return _k_station_to_altimeter_pressure(s, e)
 
 
 def altimeter_to_sea_level_pressure(altimeter, elevation, temperature):
@@ -1244,7 +1389,7 @@ def altimeter_to_sea_level_pressure(altimeter, elevation, temperature):
     a = _to_gpu(altimeter)
     e = _to_gpu(elevation)
     t = _to_gpu(temperature)
-    return altimeter_to_sea_level_pressure_kernel(a, e, t)
+    return _k_altimeter_to_sea_level_pressure(a, e, t)
 
 
 def sigma_to_pressure(sigma, psfc, ptop):
@@ -1263,7 +1408,7 @@ def sigma_to_pressure(sigma, psfc, ptop):
     s = _to_gpu(sigma)
     ps = _to_gpu(psfc)
     pt = _to_gpu(ptop)
-    return sigma_to_pressure_kernel(s, ps, pt)
+    return _k_sigma_to_pressure(s, ps, pt)
 
 
 def heat_index(temperature, relative_humidity):
@@ -1280,7 +1425,7 @@ def heat_index(temperature, relative_humidity):
     """
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
-    return heat_index_kernel(t, rh)
+    return _k_heat_index(t, rh)
 
 
 def windchill(temperature, wind_speed_val):
@@ -1297,7 +1442,7 @@ def windchill(temperature, wind_speed_val):
     """
     t = _to_gpu(temperature)
     ws = _to_gpu(wind_speed_val)
-    return windchill_kernel(t, ws)
+    return _k_windchill(t, ws)
 
 
 def apparent_temperature(temperature, relative_humidity, wind_speed_val):
@@ -1316,7 +1461,7 @@ def apparent_temperature(temperature, relative_humidity, wind_speed_val):
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
     ws = _to_gpu(wind_speed_val)
-    return apparent_temperature_kernel(t, rh, ws)
+    return _k_apparent_temperature(t, rh, ws)
 
 
 # ===========================================================================
@@ -1341,7 +1486,7 @@ def lfc(pressure, temperature, dewpoint_val, parcel_temperature_profile=None,
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return lfc_kernel(p, t, td)
+    return _k_lfc(p, t, td)
 
 
 def el(pressure, temperature, dewpoint_val, parcel_temperature_profile=None,
@@ -1362,7 +1507,7 @@ def el(pressure, temperature, dewpoint_val, parcel_temperature_profile=None,
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return el_kernel(p, t, td)
+    return _k_el(p, t, td)
 
 
 def lcl(pressure, temperature, dewpoint_val):
@@ -1382,7 +1527,7 @@ def lcl(pressure, temperature, dewpoint_val):
     p = _scalar(pressure)
     t = _scalar(temperature)
     td = _scalar(dewpoint_val)
-    return lcl_kernel(p, t, td)
+    return _k_lcl(p, t, td)
 
 
 def cape_cin(pressure, temperature, dewpoint_val, parcel_profile_or_height=None,
@@ -1414,7 +1559,7 @@ def cape_cin(pressure, temperature, dewpoint_val, parcel_profile_or_height=None,
     psfc = _scalar(kwargs.get("psfc", pressure[0] if hasattr(pressure, '__getitem__') else pressure))
     t2m = _scalar(kwargs.get("t2m", temperature[0] if hasattr(temperature, '__getitem__') else temperature))
     td2m = _scalar(kwargs.get("td2m", dewpoint_val[0] if hasattr(dewpoint_val, '__getitem__') else dewpoint_val))
-    return cape_cin_kernel(p, t, td, h, psfc, t2m, td2m, parcel_type,
+    return _k_cape_cin(p, t, td, h, psfc, t2m, td2m, parcel_type,
                            float(ml_depth), float(mu_depth), top_m)
 
 
@@ -1435,7 +1580,10 @@ def surface_based_cape_cin(pressure, temperature, dewpoint_val):
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return surface_based_cape_cin_kernel(p, t, td)
+    result = _k_cape_cin(p, t, td)
+    if isinstance(result, tuple) and len(result) > 2:
+        return result[0], result[1]  # CAPE, CIN only
+    return result
 
 
 def mixed_layer_cape_cin(pressure, temperature, dewpoint_val, depth=100.0):
@@ -1457,7 +1605,7 @@ def mixed_layer_cape_cin(pressure, temperature, dewpoint_val, depth=100.0):
     t = _1d(temperature)
     td = _1d(dewpoint_val)
     d = _scalar(depth)
-    return mixed_layer_cape_cin_kernel(p, t, td, d)
+    return _k_cape_cin(p, t, td, d)
 
 
 def most_unstable_cape_cin(pressure, temperature, dewpoint_val, depth=300, **kwargs):
@@ -1479,7 +1627,7 @@ def most_unstable_cape_cin(pressure, temperature, dewpoint_val, depth=300, **kwa
     t = _1d(temperature)
     td = _1d(dewpoint_val)
     d = _scalar(depth)
-    return most_unstable_cape_cin_kernel(p, t, td, d)
+    return _k_cape_cin(p, t, td, d)
 
 
 def downdraft_cape(pressure, temperature, dewpoint_val):
@@ -1498,7 +1646,7 @@ def downdraft_cape(pressure, temperature, dewpoint_val):
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return downdraft_cape_kernel(p, t, td)
+    return _k_downdraft_cape(p, t, td)
 
 
 def showalter_index(pressure, temperature, dewpoint_val):
@@ -1517,7 +1665,7 @@ def showalter_index(pressure, temperature, dewpoint_val):
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return showalter_index_kernel(p, t, td)
+    return _k_showalter_index(p, t, td)
 
 
 def k_index(*args, vertical_dim=0):
@@ -1532,10 +1680,10 @@ def k_index(*args, vertical_dim=0):
     cupy.ndarray (delta_degC)
     """
     if len(args) == 5:
-        return k_index_kernel(*[_to_gpu(a) for a in args])
+        return _k_k_index(*[_to_gpu(a) for a in args])
     elif len(args) == 3:
         p, t, td = [_1d(a) for a in args]
-        return k_index_kernel(p, t, td)
+        return _k_k_index(p, t, td)
     raise TypeError("k_index expects (pressure, temperature, dewpoint) or 5 scalar level values")
 
 
@@ -1547,7 +1695,7 @@ def total_totals(*args, vertical_dim=0):
     cupy.ndarray (delta_degC)
     """
     if len(args) == 3:
-        return total_totals_kernel(*[_to_gpu(a) for a in args])
+        return _k_total_totals(*[_to_gpu(a) for a in args])
     raise TypeError("total_totals expects (pressure, temperature, dewpoint) or 3 scalar level values")
 
 
@@ -1559,7 +1707,7 @@ def cross_totals(*args, vertical_dim=0):
     cupy.ndarray (delta_degC)
     """
     if len(args) in (2, 3):
-        return cross_totals_kernel(*[_to_gpu(a) for a in args])
+        return _k_cross_totals(*[_to_gpu(a) for a in args])
     raise TypeError("cross_totals expects (pressure, temperature, dewpoint) or (td850, t500)")
 
 
@@ -1571,7 +1719,7 @@ def vertical_totals(*args, vertical_dim=0):
     cupy.ndarray (delta_degC)
     """
     if len(args) == 2:
-        return vertical_totals_kernel(*[_to_gpu(a) for a in args])
+        return _k_vertical_totals(*[_to_gpu(a) for a in args])
     raise TypeError("vertical_totals expects (pressure, temperature) or (t850, t500)")
 
 
@@ -1588,7 +1736,7 @@ def sweat_index(t850, td850, t500, dd850, dd500, ff850, ff500):
     -------
     cupy.ndarray (dimensionless)
     """
-    return sweat_index_kernel(
+    return _k_sweat_index(
         _to_gpu(t850), _to_gpu(td850), _to_gpu(t500),
         _to_gpu(dd850), _to_gpu(dd500), _to_gpu(ff850), _to_gpu(ff500),
     )
@@ -1610,7 +1758,7 @@ def lifted_index(pressure, temperature, dewpoint_val):
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return lifted_index_kernel(p, t, td)
+    return _k_lifted_index(p, t, td)
 
 
 def ccl(pressure, temperature, dewpoint_val):
@@ -1629,7 +1777,7 @@ def ccl(pressure, temperature, dewpoint_val):
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return ccl_kernel(p, t, td)
+    return _k_ccl(p, t, td)
 
 
 def precipitable_water(pressure, dewpoint_val):
@@ -1646,7 +1794,7 @@ def precipitable_water(pressure, dewpoint_val):
     """
     p = _1d(pressure)
     td = _1d(dewpoint_val)
-    return precipitable_water_kernel(p, td)
+    return _k_precipitable_water(p, td)
 
 
 def brunt_vaisala_frequency(height, potential_temp):
@@ -1663,7 +1811,7 @@ def brunt_vaisala_frequency(height, potential_temp):
     """
     z = _1d(height)
     theta = _1d(potential_temp)
-    return brunt_vaisala_frequency_kernel(z, theta)
+    return _k_brunt_vaisala_frequency(z, theta)
 
 
 def brunt_vaisala_period(height, potential_temp):
@@ -1680,7 +1828,7 @@ def brunt_vaisala_period(height, potential_temp):
     """
     z = _1d(height)
     theta = _1d(potential_temp)
-    return brunt_vaisala_period_kernel(z, theta)
+    return _k_brunt_vaisala_period(z, theta)
 
 
 def brunt_vaisala_frequency_squared(height, potential_temp):
@@ -1697,7 +1845,7 @@ def brunt_vaisala_frequency_squared(height, potential_temp):
     """
     z = _1d(height)
     theta = _1d(potential_temp)
-    return brunt_vaisala_frequency_squared_kernel(z, theta)
+    return _k_brunt_vaisala_frequency_squared(z, theta)
 
 
 def static_stability(pressure, temperature):
@@ -1714,7 +1862,7 @@ def static_stability(pressure, temperature):
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    return static_stability_kernel(p, t)
+    return _k_static_stability(p, t)
 
 
 def parcel_profile_with_lcl(pressure, t_surface, td_surface):
@@ -1734,7 +1882,7 @@ def parcel_profile_with_lcl(pressure, t_surface, td_surface):
     p = _1d(pressure)
     t = _scalar(t_surface)
     td = _scalar(td_surface)
-    return parcel_profile_with_lcl_kernel(p, t, td)
+    return _STUB_parcel_profile_with_lcl(p, t, td)
 
 
 def get_layer(pressure, *args, p_bottom=None, p_top=None,
@@ -1762,7 +1910,7 @@ def get_layer(pressure, *args, p_bottom=None, p_top=None,
         pt = pb - _scalar(depth)
     else:
         raise TypeError("get_layer requires either p_top or depth")
-    results = get_layer_kernel(p, value_arrays, pb, pt)
+    results = _k_get_layer(p, value_arrays, pb, pt)
     if len(results) == 2:
         return results[0], results[1]
     return results
@@ -1786,7 +1934,7 @@ def get_layer_heights(pressure, heights, p_bottom, p_top):
     h = _1d(heights)
     pb = _scalar(p_bottom)
     pt = _scalar(p_top)
-    return get_layer_heights_kernel(p, h, pb, pt)
+    return _k_get_layer_heights(p, h, pb, pt)
 
 
 def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
@@ -1806,7 +1954,7 @@ def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
     p = _1d(pressure)
     value_arrays = [_1d(a) for a in args]
     d = _scalar(depth)
-    results = mixed_layer_kernel(p, value_arrays, d)
+    results = _k_mixed_layer(p, value_arrays, d)
     if len(results) == 1:
         return results[0]
     return tuple(results)
@@ -1826,7 +1974,7 @@ def mean_pressure_weighted(pressure, values):
     """
     p = _1d(pressure)
     v = _1d(values)
-    return mean_pressure_weighted_kernel(p, v)
+    return _k_mean_pressure_weighted(p, v)
 
 
 def get_mixed_layer_parcel(pressure, temperature, dewpoint_val, depth=100.0):
@@ -1848,7 +1996,7 @@ def get_mixed_layer_parcel(pressure, temperature, dewpoint_val, depth=100.0):
     t = _1d(temperature)
     td = _1d(dewpoint_val)
     d = _scalar(depth)
-    return get_mixed_layer_parcel_kernel(p, t, td, d)
+    return _STUB_get_mixed_layer_parcel(p, t, td, d)
 
 
 def get_most_unstable_parcel(pressure, temperature, dewpoint_val,
@@ -1871,7 +2019,7 @@ def get_most_unstable_parcel(pressure, temperature, dewpoint_val,
     t = _1d(temperature)
     td = _1d(dewpoint_val)
     d = _scalar(depth)
-    return get_most_unstable_parcel_kernel(p, t, td, d)
+    return _STUB_get_most_unstable_parcel(p, t, td, d)
 
 
 def mixed_parcel(pressure, temperature, dewpoint_val, parcel_start_pressure=None,
@@ -1915,7 +2063,7 @@ def isentropic_interpolation(theta_levels, pressure_3d, temperature_3d,
     if p_arr.ndim == 3 and nz is None:
         nz, ny, nx = p_arr.shape
     field_list = [_to_gpu(f) for f in fields]
-    return isentropic_interpolation_kernel(theta, p_arr, t_arr, field_list,
+    return _k_isentropic_interpolation(theta, p_arr, t_arr, field_list,
                                             nx, ny, nz)
 
 
@@ -1943,7 +2091,7 @@ def montgomery_streamfunction(height_or_theta, temperature_or_pressure=None,
         p = _to_gpu(temperature_or_pressure)
         t = _to_gpu(temperature)
         h = _to_gpu(height)
-        return montgomery_streamfunction_kernel(th, p, t, h)
+        return _k_montgomery_streamfunction(th, p, t, h)
     raise TypeError(
         "montgomery_streamfunction expects (height, temperature) or "
         "(theta, pressure, temperature, height)"
@@ -1998,7 +2146,7 @@ def convective_inhibition_depth(pressure, temperature, dewpoint_val):
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint_val)
-    return convective_inhibition_depth_kernel(p, t, td)
+    return _k_convective_inhibition_depth(p, t, td)
 
 
 # ===========================================================================
@@ -2018,7 +2166,7 @@ def wind_speed(u, v):
     """
     u_arr = _to_gpu(u)
     v_arr = _to_gpu(v)
-    return wind_speed_kernel(u_arr, v_arr)
+    return _k_wind_speed(u_arr, v_arr)
 
 
 def wind_direction(u, v):
@@ -2034,7 +2182,7 @@ def wind_direction(u, v):
     """
     u_arr = _to_gpu(u)
     v_arr = _to_gpu(v)
-    return wind_direction_kernel(u_arr, v_arr)
+    return _k_wind_direction(u_arr, v_arr)
 
 
 def wind_components(speed, direction):
@@ -2051,7 +2199,7 @@ def wind_components(speed, direction):
     """
     spd = _to_gpu(speed)
     dirn = _to_gpu(direction)
-    return wind_components_kernel(spd, dirn)
+    return _k_wind_components(spd, dirn)
 
 
 def bulk_shear(pressure_or_u, u_or_v, v_or_height=None, height=None,
@@ -2087,7 +2235,7 @@ def bulk_shear(pressure_or_u, u_or_v, v_or_height=None, height=None,
         top_val = bot + _scalar(depth)
     else:
         top_val = float(h_arr[-1])
-    return bulk_shear_kernel(u_arr, v_arr, h_arr, bot, top_val)
+    return _k_bulk_shear(u_arr, v_arr, h_arr, bot, top_val)
 
 
 def mean_wind(u, v, height, bottom, top):
@@ -2108,7 +2256,7 @@ def mean_wind(u, v, height, bottom, top):
     h_arr = _1d(height)
     bot = _scalar(bottom)
     top_val = _scalar(top)
-    return mean_wind_kernel(u_arr, v_arr, h_arr, bot, top_val)
+    return _k_mean_wind(u_arr, v_arr, h_arr, bot, top_val)
 
 
 def storm_relative_helicity(*args, bottom=None, depth=None,
@@ -2144,7 +2292,7 @@ def storm_relative_helicity(*args, bottom=None, depth=None,
     d = _scalar(depth_a)
     su = _scalar(storm_u) if storm_u is not None else None
     sv = _scalar(storm_v) if storm_v is not None else None
-    return storm_relative_helicity_kernel(u_arr, v_arr, h_arr, d, su, sv)
+    return _k_storm_relative_helicity(u_arr, v_arr, h_arr, d, su, sv)
 
 
 def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
@@ -2171,7 +2319,7 @@ def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
         v = _1d(u_or_v)
         h = _1d(v_or_height)
         p = None
-    return bunkers_storm_motion_kernel(p, u, v, h)
+    return _k_bunkers_storm_motion(p, u, v, h)
 
 
 def corfidi_storm_motion(pressure_or_u, u_or_v, v_or_height, *args,
@@ -2190,7 +2338,7 @@ def corfidi_storm_motion(pressure_or_u, u_or_v, v_or_height, *args,
     h_arr = _1d(v_or_height)
     u8 = _scalar(u_850)
     v8 = _scalar(v_850)
-    return corfidi_storm_motion_kernel(u_arr, v_arr, h_arr, u8, v8)
+    return _k_corfidi_storm_motion(u_arr, v_arr, h_arr, u8, v8)
 
 
 def friction_velocity(u, w):
@@ -2206,7 +2354,7 @@ def friction_velocity(u, w):
     """
     u_arr = _1d(u)
     w_arr = _1d(w)
-    return friction_velocity_kernel(u_arr, w_arr)
+    return _k_friction_velocity(u_arr, w_arr)
 
 
 def tke(u, v, w):
@@ -2223,7 +2371,7 @@ def tke(u, v, w):
     u_arr = _1d(u)
     v_arr = _1d(v)
     w_arr = _1d(w)
-    return tke_kernel(u_arr, v_arr, w_arr)
+    return _k_tke(u_arr, v_arr, w_arr)
 
 
 def gradient_richardson_number(height, potential_temperature, u, v):
@@ -2243,7 +2391,7 @@ def gradient_richardson_number(height, potential_temperature, u, v):
     theta = _1d(potential_temperature)
     u_arr = _1d(u)
     v_arr = _1d(v)
-    return gradient_richardson_number_kernel(z, theta, u_arr, v_arr)
+    return _k_gradient_richardson_number(z, theta, u_arr, v_arr)
 
 
 def coriolis_parameter(latitude):
@@ -2258,7 +2406,7 @@ def coriolis_parameter(latitude):
     cupy.ndarray (1/s)
     """
     lat = _to_gpu(latitude)
-    return coriolis_parameter_kernel(lat)
+    return _k_coriolis_parameter(lat)
 
 
 # ===========================================================================
@@ -2283,7 +2431,7 @@ def divergence(u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return divergence_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _k_divergence(u_arr, v_arr, dx_val, dy_val)
 
 
 def vorticity(u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
@@ -2304,7 +2452,7 @@ def vorticity(u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return vorticity_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _k_vorticity(u_arr, v_arr, dx_val, dy_val)
 
 
 def absolute_vorticity(u, v, lats=None, dx=None, dy=None, latitude=None,
@@ -2327,7 +2475,8 @@ def absolute_vorticity(u, v, lats=None, dx=None, dy=None, latitude=None,
     lats_arr = _2d(lat_source)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return absolute_vorticity_kernel(u_arr, v_arr, lats_arr, dx_val, dy_val)
+    f_arr = _k_coriolis_parameter(lats_arr)
+    return _k_absolute_vorticity(u_arr, v_arr, dx_val, dy_val, f_arr)
 
 
 def advection(scalar, *args, dx=None, dy=None, dz=None, x_dim=-1, y_dim=-2,
@@ -2357,7 +2506,7 @@ def advection(scalar, *args, dx=None, dy=None, dz=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return advection_kernel(s_arr, u_arr, v_arr, dx_val, dy_val)
+    return _k_advection(s_arr, u_arr, v_arr, dx_val, dy_val)
 
 
 def frontogenesis(theta, u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
@@ -2380,7 +2529,7 @@ def frontogenesis(theta, u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return frontogenesis_kernel(t_arr, u_arr, v_arr, dx_val, dy_val)
+    return _k_frontogenesis(t_arr, u_arr, v_arr, dx_val, dy_val)
 
 
 def geostrophic_wind(heights, dx=None, dy=None, latitude=None, x_dim=-1,
@@ -2400,9 +2549,10 @@ def geostrophic_wind(heights, dx=None, dy=None, latitude=None, x_dim=-1,
     """
     h_arr = _2d(heights)
     lats_arr = _2d(latitude)
+    f_arr = _k_coriolis_parameter(lats_arr)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return geostrophic_wind_kernel(h_arr, lats_arr, dx_val, dy_val)
+    return _k_geostrophic_wind(h_arr, f_arr, dx_val, dy_val)
 
 
 def ageostrophic_wind(u, v, heights, lats, dx, dy):
@@ -2425,7 +2575,8 @@ def ageostrophic_wind(u, v, heights, lats, dx, dy):
     lats_arr = _2d(lats)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return ageostrophic_wind_kernel(u_arr, v_arr, h_arr, lats_arr, dx_val, dy_val)
+    f_arr = _k_coriolis_parameter(lats_arr)
+    return _k_ageostrophic_wind(u_arr, v_arr, h_arr, f_arr, dx_val, dy_val)
 
 
 def potential_vorticity_baroclinic(potential_temp, pressure, *args, dx=None,
@@ -2442,7 +2593,7 @@ def potential_vorticity_baroclinic(potential_temp, pressure, *args, dx=None,
     p = _to_gpu(pressure)
     dx_val = _mean_spacing(dx) if dx is not None else None
     dy_val = _mean_spacing(dy) if dy is not None else None
-    return potential_vorticity_baroclinic_kernel(pt, p, gpu_args, dx_val, dy_val, latitude)
+    return _k_potential_vorticity_baroclinic(pt, p, gpu_args, dx_val, dy_val, latitude)
 
 
 def potential_vorticity_barotropic(heights, u, v, lats, dx, dy):
@@ -2465,7 +2616,7 @@ def potential_vorticity_barotropic(heights, u, v, lats, dx, dy):
     lats_arr = _2d(lats)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return potential_vorticity_barotropic_kernel(h_arr, u_arr, v_arr, lats_arr,
+    return _k_potential_vorticity_barotropic(h_arr, u_arr, v_arr, lats_arr,
                                                  dx_val, dy_val)
 
 
@@ -2483,7 +2634,7 @@ def normal_component(u, v, start, end):
     """
     u_arr = _1d(u)
     v_arr = _1d(v)
-    return normal_component_kernel(u_arr, v_arr, start, end)
+    return _k_normal_component(u_arr, v_arr, start, end)
 
 
 def tangential_component(u, v, start, end):
@@ -2500,7 +2651,7 @@ def tangential_component(u, v, start, end):
     """
     u_arr = _1d(u)
     v_arr = _1d(v)
-    return tangential_component_kernel(u_arr, v_arr, start, end)
+    return _k_tangential_component(u_arr, v_arr, start, end)
 
 
 def unit_vectors_from_cross_section(start, end):
@@ -2545,7 +2696,7 @@ def vector_derivative(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return vector_derivative_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _STUB_vector_derivative(u_arr, v_arr, dx_val, dy_val)
 
 
 def absolute_momentum(u, lats, y_distances):
@@ -2564,7 +2715,7 @@ def absolute_momentum(u, lats, y_distances):
     u_arr = _1d(u)
     lat_arr = _1d(lats)
     yd = _1d(y_distances)
-    return absolute_momentum_kernel(u_arr, lat_arr, yd)
+    return _STUB_absolute_momentum(u_arr, lat_arr, yd)
 
 
 def cross_section_components(u, v, start_lat, start_lon, end_lat, end_lon):
@@ -2585,7 +2736,7 @@ def cross_section_components(u, v, start_lat, start_lon, end_lat, end_lon):
     slon = _scalar(start_lon)
     elat = _scalar(end_lat)
     elon = _scalar(end_lon)
-    return cross_section_components_kernel(u_arr, v_arr, slat, slon, elat, elon)
+    return _STUB_cross_section_components(u_arr, v_arr, slat, slon, elat, elon)
 
 
 def curvature_vorticity(u, v, dx, dy):
@@ -2604,7 +2755,7 @@ def curvature_vorticity(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return curvature_vorticity_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _k_curvature_vorticity(u_arr, v_arr, dx_val, dy_val)
 
 
 def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy):
@@ -2626,7 +2777,7 @@ def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy):
     vg = _2d(v_geo)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return inertial_advective_wind_kernel(u_arr, v_arr, ug, vg, dx_val, dy_val)
+    return _k_inertial_advective_wind(u_arr, v_arr, ug, vg, dx_val, dy_val)
 
 
 def kinematic_flux(v_component, scalar):
@@ -2643,7 +2794,7 @@ def kinematic_flux(v_component, scalar):
     """
     v_arr = _1d(v_component)
     s_arr = _1d(scalar)
-    return kinematic_flux_kernel(v_arr, s_arr)
+    return _STUB_kinematic_flux(v_arr, s_arr)
 
 
 def q_vector(u, v, temperature, pressure, dx=None, dy=None, **kwargs):
@@ -2666,7 +2817,7 @@ def q_vector(u, v, temperature, pressure, dx=None, dy=None, **kwargs):
     p_val = _scalar(pressure)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return q_vector_kernel(t_arr, u_arr, v_arr, p_val, dx_val, dy_val)
+    return _k_q_vector(t_arr, u_arr, v_arr, p_val, dx_val, dy_val)
 
 
 def shear_vorticity(u, v, dx, dy):
@@ -2685,7 +2836,7 @@ def shear_vorticity(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return shear_vorticity_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _k_shear_vorticity(u_arr, v_arr, dx_val, dy_val)
 
 
 def shearing_deformation(u, v, dx, dy):
@@ -2704,7 +2855,7 @@ def shearing_deformation(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return shearing_deformation_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _k_shearing_deformation(u_arr, v_arr, dx_val, dy_val)
 
 
 def stretching_deformation(u, v, dx, dy):
@@ -2723,7 +2874,7 @@ def stretching_deformation(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return stretching_deformation_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _k_stretching_deformation(u_arr, v_arr, dx_val, dy_val)
 
 
 def total_deformation(u, v, dx, dy):
@@ -2742,7 +2893,7 @@ def total_deformation(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return total_deformation_kernel(u_arr, v_arr, dx_val, dy_val)
+    return _k_total_deformation(u_arr, v_arr, dx_val, dy_val)
 
 
 def geospatial_gradient(data, lats, lons):
@@ -2760,7 +2911,7 @@ def geospatial_gradient(data, lats, lons):
     d = _2d(data)
     lat = _2d(lats)
     lon = _2d(lons)
-    return geospatial_gradient_kernel(d, lat, lon)
+    return _STUB_geospatial_gradient(d, lat, lon)
 
 
 def geospatial_laplacian(data, lats, lons):
@@ -2778,7 +2929,7 @@ def geospatial_laplacian(data, lats, lons):
     d = _2d(data)
     lat = _2d(lats)
     lon = _2d(lons)
-    return geospatial_laplacian_kernel(d, lat, lon)
+    return _STUB_geospatial_laplacian(d, lat, lon)
 
 
 def advection_3d(scalar, u, v, w, dx, dy, dz):
@@ -2801,7 +2952,7 @@ def advection_3d(scalar, u, v, w, dx, dy, dz):
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
     dz_val = _scalar(dz)
-    return advection_3d_kernel(s, u_arr, v_arr, w_arr, dx_val, dy_val, dz_val)
+    return _STUB_advection_3d(s, u_arr, v_arr, w_arr, dx_val, dy_val, dz_val)
 
 
 def lat_lon_grid_deltas(longitude, latitude, x_dim=-1, y_dim=-2, geod=None):
@@ -2818,7 +2969,7 @@ def lat_lon_grid_deltas(longitude, latitude, x_dim=-1, y_dim=-2, geod=None):
     """
     lon = _2d(longitude)
     lat = _2d(latitude)
-    return lat_lon_grid_deltas_kernel(lon, lat)
+    return _k_lat_lon_grid_deltas(lon, lat)
 
 
 # ===========================================================================
@@ -2844,7 +2995,7 @@ def significant_tornado_parameter(sbcape, lcl_height, srh_0_1km,
     lcl_h = _to_gpu(lcl_height)
     srh = _to_gpu(srh_0_1km)
     shear = _to_gpu(bulk_shear_0_6km)
-    return significant_tornado_parameter_kernel(cape, lcl_h, srh, shear)
+    return _k_significant_tornado_parameter(cape, lcl_h, srh, shear)
 
 
 def supercell_composite_parameter(mucape, srh_eff, bulk_shear_eff):
@@ -2863,7 +3014,7 @@ def supercell_composite_parameter(mucape, srh_eff, bulk_shear_eff):
     cape = _to_gpu(mucape)
     srh = _to_gpu(srh_eff)
     shear = _to_gpu(bulk_shear_eff)
-    return supercell_composite_parameter_kernel(cape, srh, shear)
+    return _k_supercell_composite_parameter(cape, srh, shear)
 
 
 def critical_angle(*args):
@@ -2874,7 +3025,7 @@ def critical_angle(*args):
     cupy.ndarray (degrees)
     """
     gpu_args = [_to_gpu(a) for a in args]
-    return critical_angle_kernel(*gpu_args)
+    return _k_critical_angle(*gpu_args)
 
 
 def boyden_index(z1000, z700, t700):
@@ -2890,7 +3041,7 @@ def boyden_index(z1000, z700, t700):
     -------
     cupy.ndarray (dimensionless)
     """
-    return boyden_index_kernel(_to_gpu(z1000), _to_gpu(z700), _to_gpu(t700))
+    return _k_boyden_index(_to_gpu(z1000), _to_gpu(z700), _to_gpu(t700))
 
 
 def bulk_richardson_number(cape, shear_0_6km):
@@ -2905,7 +3056,7 @@ def bulk_richardson_number(cape, shear_0_6km):
     -------
     cupy.ndarray (dimensionless)
     """
-    return bulk_richardson_number_kernel(_to_gpu(cape), _to_gpu(shear_0_6km))
+    return _k_bulk_richardson_number(_to_gpu(cape), _to_gpu(shear_0_6km))
 
 
 def dendritic_growth_zone(temperature, pressure):
@@ -2922,7 +3073,7 @@ def dendritic_growth_zone(temperature, pressure):
     """
     t = _1d(temperature)
     p = _1d(pressure)
-    return dendritic_growth_zone_kernel(t, p)
+    return _k_dendritic_growth_zone(t, p)
 
 
 def fosberg_fire_weather_index(temperature, relative_humidity, wind_speed_val):
@@ -2941,7 +3092,7 @@ def fosberg_fire_weather_index(temperature, relative_humidity, wind_speed_val):
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
     ws = _to_gpu(wind_speed_val)
-    return fosberg_fire_weather_index_kernel(t, rh, ws)
+    return _k_fosberg_fire_weather_index(t, rh, ws)
 
 
 def freezing_rain_composite(temperature, pressure, precip_type):
@@ -2959,7 +3110,7 @@ def freezing_rain_composite(temperature, pressure, precip_type):
     """
     t = _1d(temperature)
     p = _1d(pressure)
-    return freezing_rain_composite_kernel(t, p, int(precip_type))
+    return _k_freezing_rain_composite(t, p, int(precip_type))
 
 
 def haines_index(t_950, t_850, td_850):
@@ -2973,7 +3124,7 @@ def haines_index(t_950, t_850, td_850):
     -------
     int
     """
-    return haines_index_kernel(_to_gpu(t_950), _to_gpu(t_850), _to_gpu(td_850))
+    return _k_haines_index(_to_gpu(t_950), _to_gpu(t_850), _to_gpu(td_850))
 
 
 def hot_dry_windy(temperature, relative_humidity, wind_speed_val, vpd=0.0):
@@ -2993,7 +3144,7 @@ def hot_dry_windy(temperature, relative_humidity, wind_speed_val, vpd=0.0):
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
     ws = _to_gpu(wind_speed_val)
-    return hot_dry_windy_kernel(t, rh, ws, float(vpd))
+    return _k_hot_dry_windy(t, rh, ws, float(vpd))
 
 
 def warm_nose_check(temperature, pressure):
@@ -3010,7 +3161,7 @@ def warm_nose_check(temperature, pressure):
     """
     t = _1d(temperature)
     p = _1d(pressure)
-    return warm_nose_check_kernel(t, p)
+    return _k_warm_nose_check(t, p)
 
 
 def galvez_davison_index(t950, t850, t700, t500, td950, td850, td700, sst):
@@ -3024,7 +3175,7 @@ def galvez_davison_index(t950, t850, t700, t500, td950, td850, td700, sst):
     -------
     cupy.ndarray (dimensionless)
     """
-    return galvez_davison_index_kernel(
+    return _k_galvez_davison_index(
         _to_gpu(t950), _to_gpu(t850), _to_gpu(t700), _to_gpu(t500),
         _to_gpu(td950), _to_gpu(td850), _to_gpu(td700), _to_gpu(sst),
     )
@@ -3049,7 +3200,7 @@ def compute_cape_cin(pressure_3d, temperature_c_3d, qvapor_3d,
     ps = _to_gpu(psfc)
     t2v = _to_gpu(t2)
     q2v = _to_gpu(q2)
-    return compute_cape_cin_kernel(p3, t3, q3, h3, ps, t2v, q2v,
+    return _STUB_compute_cape_cin(p3, t3, q3, h3, ps, t2v, q2v,
                                    parcel_type, top_m)
 
 
@@ -3062,7 +3213,7 @@ def compute_srh(u_3d, v_3d, height_agl_3d, top_m=1000.0):
     u3 = _to_gpu(u_3d)
     v3 = _to_gpu(v_3d)
     h3 = _to_gpu(height_agl_3d)
-    return compute_srh_kernel(u3, v3, h3, _scalar(top_m))
+    return _STUB_compute_srh(u3, v3, h3, _scalar(top_m))
 
 
 def compute_shear(u_3d, v_3d, height_agl_3d, bottom_m=0.0, top_m=6000.0):
@@ -3074,7 +3225,7 @@ def compute_shear(u_3d, v_3d, height_agl_3d, bottom_m=0.0, top_m=6000.0):
     u3 = _to_gpu(u_3d)
     v3 = _to_gpu(v_3d)
     h3 = _to_gpu(height_agl_3d)
-    return compute_shear_kernel(u3, v3, h3, _scalar(bottom_m), _scalar(top_m))
+    return _STUB_compute_shear(u3, v3, h3, _scalar(bottom_m), _scalar(top_m))
 
 
 def compute_lapse_rate(temperature_c_3d, qvapor_3d, height_agl_3d,
@@ -3087,7 +3238,7 @@ def compute_lapse_rate(temperature_c_3d, qvapor_3d, height_agl_3d,
     t3 = _to_gpu(temperature_c_3d)
     q3 = _to_gpu(qvapor_3d)
     h3 = _to_gpu(height_agl_3d)
-    return compute_lapse_rate_kernel(t3, q3, h3, _scalar(bottom_km),
+    return _k_compute_lapse_rate(t3, q3, h3, _scalar(bottom_km),
                                      _scalar(top_km))
 
 
@@ -3099,7 +3250,7 @@ def compute_pw(qvapor_3d, pressure_3d):
     """
     q3 = _to_gpu(qvapor_3d)
     p3 = _to_gpu(pressure_3d)
-    return compute_pw_kernel(q3, p3)
+    return _STUB_compute_pw(q3, p3)
 
 
 def compute_stp(cape, lcl_height, srh_1km, shear_6km):
@@ -3112,7 +3263,7 @@ def compute_stp(cape, lcl_height, srh_1km, shear_6km):
     l = _2d(lcl_height)
     s = _2d(srh_1km)
     sh = _2d(shear_6km)
-    return compute_stp_kernel(c, l, s, sh)
+    return _k_significant_tornado_parameter(c, l, s, sh)
 
 
 def compute_scp(mucape, srh_3km, shear_6km):
@@ -3124,7 +3275,7 @@ def compute_scp(mucape, srh_3km, shear_6km):
     c = _2d(mucape)
     s = _2d(srh_3km)
     sh = _2d(shear_6km)
-    return compute_scp_kernel(c, s, sh)
+    return _k_supercell_composite_parameter(c, s, sh)
 
 
 def compute_ehi(cape, srh):
@@ -3135,7 +3286,7 @@ def compute_ehi(cape, srh):
     """
     c = _2d(cape)
     s = _2d(srh)
-    return compute_ehi_kernel(c, s)
+    return _k_compute_ehi(c, s)
 
 
 def compute_ship(cape, shear06, t500, lr_700_500, mixing_ratio_gkg):
@@ -3149,7 +3300,7 @@ def compute_ship(cape, shear06, t500, lr_700_500, mixing_ratio_gkg):
     t5 = _2d(t500)
     lr = _2d(lr_700_500)
     mr = _2d(mixing_ratio_gkg)
-    return compute_ship_kernel(c, sh, t5, lr, mr)
+    return _k_compute_ship(c, sh, t5, lr, mr)
 
 
 def compute_dcp(dcape, mu_cape, shear06, mu_mixing_ratio):
@@ -3162,7 +3313,7 @@ def compute_dcp(dcape, mu_cape, shear06, mu_mixing_ratio):
     mc = _2d(mu_cape)
     sh = _2d(shear06)
     mr = _2d(mu_mixing_ratio)
-    return compute_dcp_kernel(d, mc, sh, mr)
+    return _k_compute_dcp(d, mc, sh, mr)
 
 
 def compute_grid_scp(mu_cape, srh, shear_06, mu_cin):
@@ -3175,7 +3326,7 @@ def compute_grid_scp(mu_cape, srh, shear_06, mu_cin):
     s = _2d(srh)
     sh = _2d(shear_06)
     ci = _2d(mu_cin)
-    return compute_grid_scp_kernel(mc, s, sh, ci)
+    return _STUB_compute_grid_scp(mc, s, sh, ci)
 
 
 def compute_grid_critical_angle(u_storm, v_storm, u_shear, v_shear):
@@ -3188,7 +3339,7 @@ def compute_grid_critical_angle(u_storm, v_storm, u_shear, v_shear):
     vs = _2d(v_storm)
     ush = _2d(u_shear)
     vsh = _2d(v_shear)
-    return compute_grid_critical_angle_kernel(us, vs, ush, vsh)
+    return _STUB_compute_grid_critical_angle(us, vs, ush, vsh)
 
 
 def composite_reflectivity(refl_3d):
@@ -3198,7 +3349,7 @@ def composite_reflectivity(refl_3d):
     Returns composite reflectivity shaped (ny, nx).
     """
     r3 = _to_gpu(refl_3d)
-    return composite_reflectivity_kernel(r3)
+    return _k_composite_reflectivity(r3)
 
 
 def composite_reflectivity_from_hydrometeors(pressure_3d, temperature_c_3d,
@@ -3213,7 +3364,7 @@ def composite_reflectivity_from_hydrometeors(pressure_3d, temperature_c_3d,
     qr = _to_gpu(qrain_3d)
     qs = _to_gpu(qsnow_3d)
     qg = _to_gpu(qgraup_3d)
-    return composite_reflectivity_from_hydrometeors_kernel(p3, t3, qr, qs, qg)
+    return _STUB_composite_refl_hydro(p3, t3, qr, qs, qg)
 
 
 # ===========================================================================
@@ -3233,7 +3384,7 @@ def smooth_gaussian(data, sigma):
     cupy.ndarray
     """
     arr = _2d(data)
-    return smooth_gaussian_kernel(arr, float(sigma))
+    return _k_smooth_gaussian(arr, float(sigma))
 
 
 def smooth_rectangular(data, size, passes=1):
@@ -3250,7 +3401,7 @@ def smooth_rectangular(data, size, passes=1):
     cupy.ndarray
     """
     arr = _2d(data)
-    return smooth_rectangular_kernel(arr, int(size), int(passes))
+    return _k_smooth_rectangular(arr, int(size), int(passes))
 
 
 def smooth_circular(data, radius, passes=1):
@@ -3267,7 +3418,7 @@ def smooth_circular(data, radius, passes=1):
     cupy.ndarray
     """
     arr = _2d(data)
-    return smooth_circular_kernel(arr, float(radius), int(passes))
+    return _k_smooth_circular(arr, float(radius), int(passes))
 
 
 def smooth_n_point(data, n, passes=1):
@@ -3284,7 +3435,7 @@ def smooth_n_point(data, n, passes=1):
     cupy.ndarray
     """
     arr = _2d(data)
-    return smooth_n_point_kernel(arr, int(n), int(passes))
+    return _k_smooth_n_point(arr, int(n), int(passes))
 
 
 def smooth_window(data, window, passes=1, normalize_weights=True):
@@ -3303,7 +3454,7 @@ def smooth_window(data, window, passes=1, normalize_weights=True):
     """
     d_arr = _2d(data)
     w_arr = _2d(window)
-    return smooth_window_kernel(d_arr, w_arr, int(passes), bool(normalize_weights))
+    return _k_smooth_window(d_arr, w_arr, int(passes), bool(normalize_weights))
 
 
 def gradient(f, **kwargs):
@@ -3323,8 +3474,8 @@ def gradient(f, **kwargs):
     if data.ndim == 2 and deltas is not None and len(deltas) >= 2:
         dy_val = _scalar(deltas[0])
         dx_val = _scalar(deltas[1])
-        gx = gradient_x_kernel(data, dx_val)
-        gy = gradient_y_kernel(data, dy_val)
+        gx = _k_first_derivative_x(data, dx_val)
+        gy = _k_first_derivative_y(data, dy_val)
         return [gy, gx]
     # General fallback using cupy.gradient
     if deltas is not None:
@@ -3351,7 +3502,7 @@ def gradient_x(data, dx):
     """
     d_arr = _2d(data)
     dx_val = _mean_spacing(dx)
-    return gradient_x_kernel(d_arr, dx_val)
+    return _k_first_derivative_x(d_arr, dx_val)
 
 
 def gradient_y(data, dy):
@@ -3368,7 +3519,7 @@ def gradient_y(data, dy):
     """
     d_arr = _2d(data)
     dy_val = _mean_spacing(dy)
-    return gradient_y_kernel(d_arr, dy_val)
+    return _k_first_derivative_y(d_arr, dy_val)
 
 
 def laplacian(data, dx, dy):
@@ -3386,7 +3537,7 @@ def laplacian(data, dx, dy):
     d_arr = _2d(data)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return laplacian_kernel(d_arr, dx_val, dy_val)
+    return _k_laplacian(d_arr, dx_val, dy_val)
 
 
 def first_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
@@ -3410,7 +3561,7 @@ def first_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
     if axis_spacing is None:
         raise TypeError("first_derivative requires axis spacing")
     ds = _mean_spacing(axis_spacing)
-    return first_derivative_kernel(d_arr, ds, int(axis))
+    return _STUB_first_derivative(d_arr, ds, int(axis))
 
 
 def second_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
@@ -3434,7 +3585,7 @@ def second_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
     if axis_spacing is None:
         raise TypeError("second_derivative requires axis spacing")
     ds = _mean_spacing(axis_spacing)
-    return second_derivative_kernel(d_arr, ds, int(axis))
+    return _STUB_second_derivative(d_arr, ds, int(axis))
 
 
 # ===========================================================================

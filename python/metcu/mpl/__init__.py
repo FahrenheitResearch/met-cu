@@ -24,6 +24,7 @@ from .met_plots import (
     plot_temperature, plot_dewpoint, plot_cape, plot_reflectivity,
     plot_srh, plot_shear, plot_stp, plot_theta_e, plot_vorticity,
     plot_frontogenesis, plot_wind_speed, plot_pwat, mesoanalysis,
+    single_plot, plot_field,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     'plot_temperature', 'plot_dewpoint', 'plot_cape', 'plot_reflectivity',
     'plot_srh', 'plot_shear', 'plot_stp', 'plot_theta_e', 'plot_vorticity',
     'plot_frontogenesis', 'plot_wind_speed', 'plot_pwat', 'mesoanalysis',
+    'single_plot', 'plot_field',
 ]
 
 # ---- Store originals ----

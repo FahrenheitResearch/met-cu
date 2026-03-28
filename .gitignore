@@ -1,3 +1,7 @@
+tests/demo_*.py
+tests/frames/
+tests/live_demo/
+tests/real_plots/
 *.pyc
 __pycache__/
 *.egg-info/

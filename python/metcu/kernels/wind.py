@@ -1353,7 +1353,7 @@ _gdi_ek = cp.ElementwiseKernel(
     double mu_term = theta500 - theta700;
 
     // GDI = CBI + II + MWI (simplified)
-    // Empirical: GDI ≈ A*(alpha - beta) + B*gamma_term + C*(sst - 273.15 - 26.5)
+    // Empirical: GDI ~ A*(alpha - beta) + B*gamma_term + C*(sst - 273.15 - 26.5)
     double cbi = alpha - beta;
     double sst_term = sst - 26.5;  // assume sst in degC
 

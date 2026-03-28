@@ -322,9 +322,10 @@ def _STUB_compute_pw(*args, **kwargs):
 
 
 def _STUB_compute_grid_scp(mc, s, sh, ci):
-    """Enhanced SCP with CIN term."""
+    """Enhanced SCP with CIN term (grid-scale formula with shear/40)."""
     import cupy as cp
-    scp = _k_supercell_composite_parameter(mc, s, sh)
+    scp = (mc / 1000.0) * (s / 50.0) * (sh / 40.0)
+    scp = cp.maximum(scp, 0.0)
     cin_term = cp.where(ci > -40.0, 1.0, -40.0 / ci)
     return scp * cin_term
 
@@ -593,6 +594,13 @@ def mixing_ratio(partial_press_or_pressure, total_press_or_temperature,
     """
     a = _to_gpu(partial_press_or_pressure)
     b = _to_gpu(total_press_or_temperature)
+    # If the second arg looks like temperature (values roughly -100..60),
+    # compute saturation mixing ratio from (pressure, temperature)
+    # Otherwise compute from (vapor_pressure, total_pressure)
+    b_mean = float(b.mean()) if b.size > 0 else 0.0
+    if abs(b_mean) < 200.0:
+        # Likely (pressure, temperature) form
+        return _k_saturation_mixing_ratio(a, b)
     return _k_mixing_ratio(a, b)
 
 
@@ -2099,24 +2107,26 @@ def isentropic_interpolation(theta_levels, pressure_3d, temperature_3d,
 
     Parameters
     ----------
-    theta_levels : array-like (K)
+    theta_levels : array-like (K) -- target theta values
     pressure_3d : 3-D array (hPa)
-    temperature_3d : 3-D array (K)
-    fields : list of 3-D arrays
+    temperature_3d : 3-D array (K) -- this is treated as potential temperature
+    fields : list of 3-D arrays to interpolate
     nx, ny, nz : int, optional
 
     Returns
     -------
-    list of cupy.ndarray
+    list of cupy.ndarray, each shaped (n_theta, ny, nx)
     """
-    theta = _1d(theta_levels)
+    theta_targets = _1d(theta_levels)
     p_arr = _to_gpu(pressure_3d)
-    t_arr = _to_gpu(temperature_3d)
-    if p_arr.ndim == 3 and nz is None:
-        nz, ny, nx = p_arr.shape
+    theta_3d = _to_gpu(temperature_3d)  # assumed to be potential temperature
     field_list = [_to_gpu(f) for f in fields]
-    return _k_isentropic_interpolation(theta, p_arr, t_arr, field_list,
-                                            nx, ny, nz)
+    # Kernel interpolates one field at a time
+    results = []
+    for f in field_list:
+        result = _k_isentropic_interpolation(theta_3d, p_arr, f, theta_targets)
+        results.append(result)
+    return results
 
 
 def montgomery_streamfunction(height_or_theta, temperature_or_pressure=None,
@@ -2717,19 +2727,14 @@ def unit_vectors_from_cross_section(start, end):
     -------
     tuple of ((east, north), (east, north))
     """
-    # CPU-only utility
-    try:
-        from metrust.calc import unit_vectors_from_cross_section as _uv
-        return _uv(start, end)
-    except ImportError:
-        dlat = end[0] - start[0]
-        dlon = end[1] - start[1]
-        mag = np.sqrt(dlat**2 + dlon**2)
-        if mag < 1e-12:
-            return (0.0, 0.0), (0.0, 0.0)
-        tang = (dlon / mag, dlat / mag)
-        norm = (-dlat / mag, dlon / mag)
-        return tang, norm
+    dlat = end[0] - start[0]
+    dlon = end[1] - start[1]
+    mag = np.sqrt(dlat**2 + dlon**2)
+    if mag < 1e-12:
+        return (0.0, 0.0), (0.0, 0.0)
+    tang = (dlon / mag, dlat / mag)
+    norm = (-dlat / mag, dlon / mag)
+    return tang, norm
 
 
 def vector_derivative(u, v, dx, dy):
@@ -3346,11 +3351,13 @@ def compute_scp(mucape, srh_3km, shear_6km):
 
     All inputs: shape (ny, nx).
     Returns SCP shaped (ny, nx), dimensionless.
+    Uses the grid-scale SCP formula with shear/40 (vs scalar shear/30).
     """
     c = _2d(mucape)
     s = _2d(srh_3km)
     sh = _2d(shear_6km)
-    return _k_supercell_composite_parameter(c, s, sh)
+    scp = (c / 1000.0) * (s / 50.0) * (sh / 40.0)
+    return cp.maximum(scp, 0.0)
 
 
 def compute_ehi(cape, srh):

@@ -1,307 +1,181 @@
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: mixing_ratio() takes 2 positional arguments but 3 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: only length-1 arrays can be converted to Python scalars
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: only length-1 arrays can be converted to Python scalars
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: only length-1 arrays can be converted to Python scalars
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: only length-1 arrays can be converted to Python scalars
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: only length-1 arrays can be converted to Python scalars
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: only length-1 arrays can be converted to Python scalars
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: brunt_vaisala_period() takes 1 positional argument but 2 were given
-C:\Users\drew\metrust-py\python\metrust\calc\__init__.py:183: UnitStrippedWarning: The unit of the quantity is stripped when downcasting to ndarray.
-  template_shape = np.asarray(template).shape
 GPU: NVIDIA GeForce RTX 5090 (34.2 GB)
 
 ==========================================================================================
  CATEGORY 1: Per-element thermodynamic -- N=1,905,141 points
 ==========================================================================================
-  PASS potential_temperature                              GPU:    1.98ms CPU:   11.80ms     5.9x  PASS
-  PASS temperature_from_potential_temperature             GPU:    1.97ms CPU:   11.20ms     5.7x  PASS
-  PASS virtual_temperature_from_dewpoint                  GPU:    2.58ms CPU:   17.03ms     6.6x  PASS
-  WARN virtual_potential_temperature                      GPU:    2.68ms CPU:   15.32ms     5.7x  DIFF=4555
-  PASS equivalent_potential_temperature                   GPU:    3.45ms CPU:   19.31ms     5.6x  PASS
-  PASS saturation_equivalent_potential_temperature        GPU:    2.67ms CPU:   16.86ms     6.3x  PASS
-  PASS wet_bulb_temperature                               GPU:    3.65ms CPU:   21.07ms     5.8x  PASS
-  PASS wet_bulb_potential_temperature                     GPU:    3.63ms CPU:   19.44ms     5.4x  PASS
-  PASS saturation_vapor_pressure                          GPU:    1.35ms CPU:    9.99ms     7.4x  PASS
-  PASS vapor_pressure                                     GPU:    1.40ms CPU:   10.00ms     7.2x  PASS
-  PASS dewpoint                                           GPU:    0.11ms CPU:    0.98ms     9.2x  PASS
-  PASS dewpoint_from_relative_humidity                    GPU:    2.16ms CPU:   10.76ms     5.0x  PASS
-  PASS dewpoint_from_specific_humidity                    GPU:    2.08ms CPU:   13.74ms     6.6x  PASS
-  FAIL mixing_ratio                                       mixing_ratio() takes 2 positional arguments but 3 were given
-  PASS saturation_mixing_ratio                            GPU:    2.23ms CPU:   13.72ms     6.1x  PASS
-  PASS mixing_ratio_from_relative_humidity                GPU:    2.92ms CPU:   15.81ms     5.4x  PASS
-  PASS mixing_ratio_from_specific_humidity                GPU:    1.08ms CPU:    7.77ms     7.2x  PASS
-  PASS specific_humidity_from_dewpoint                    GPU:    2.31ms CPU:   13.17ms     5.7x  PASS
-  PASS specific_humidity_from_mixing_ratio                GPU:    0.99ms CPU:    8.31ms     8.4x  PASS
-  PASS relative_humidity_from_dewpoint                    GPU:    2.55ms CPU:   14.33ms     5.6x  PASS
-  WARN relative_humidity_from_mixing_ratio                GPU:    3.02ms CPU:   17.32ms     5.7x  DIFF=1.972e+07
-  WARN relative_humidity_from_specific_humidity           GPU:    3.21ms CPU:   17.23ms     5.4x  DIFF=1.952e+04
-  WARN density                                            GPU:    2.93ms CPU:   13.67ms     4.7x  DIFF=1.369
-  PASS dry_static_energy                                  GPU:    1.76ms CPU:  965.20ms   548.6x  PASS
-  PASS moist_static_energy                                GPU:    2.61ms CPU: 1112.86ms   426.7x  PASS
-  PASS exner_function                                     GPU:    1.10ms CPU:    9.69ms     8.8x  PASS
-  PASS montgomery_streamfunction                          GPU:    0.11ms CPU:    2.05ms    19.3x  PASS
-  PASS dry_lapse                                          GPU:    0.08ms CPU:    0.12ms     1.4x  PASS
+  PASS potential_temperature                              GPU:    2.03ms CPU:   12.74ms     6.3x  PASS
+  PASS temperature_from_potential_temperature             GPU:    1.92ms CPU:   11.29ms     5.9x  PASS
+  PASS virtual_temperature_from_dewpoint                  GPU:    2.67ms CPU:   16.62ms     6.2x  PASS
+  PASS virtual_potential_temperature                      GPU:    2.67ms CPU:   15.28ms     5.7x  PASS
+  PASS equivalent_potential_temperature                   GPU:    3.40ms CPU:   18.92ms     5.6x  PASS
+  PASS saturation_equivalent_potential_temperature        GPU:    2.54ms CPU:   15.89ms     6.3x  PASS
+  PASS wet_bulb_temperature                               GPU:    3.37ms CPU:   19.45ms     5.8x  PASS
+  PASS wet_bulb_potential_temperature                     GPU:    4.82ms CPU:   20.62ms     4.3x  PASS
+  PASS saturation_vapor_pressure                          GPU:    1.22ms CPU:    9.90ms     8.1x  PASS
+  PASS vapor_pressure                                     GPU:    1.27ms CPU:   10.55ms     8.3x  PASS
+  PASS dewpoint                                           GPU:    0.10ms CPU:    1.17ms    11.2x  PASS
+  PASS dewpoint_from_relative_humidity                    GPU:    2.14ms CPU:   11.13ms     5.2x  PASS
+  PASS dewpoint_from_specific_humidity                    GPU:    1.81ms CPU:   11.77ms     6.5x  PASS
+  WARN mixing_ratio                                       GPU:    2.13ms CPU:   12.96ms     6.1x  DIFF=2.491
+  PASS saturation_mixing_ratio                            GPU:    2.01ms CPU:   13.10ms     6.5x  PASS
+  PASS mixing_ratio_from_relative_humidity                GPU:    2.79ms CPU:   16.04ms     5.8x  PASS
+  PASS mixing_ratio_from_specific_humidity                GPU:    1.03ms CPU:    8.54ms     8.3x  PASS
+  PASS specific_humidity_from_dewpoint                    GPU:    2.19ms CPU:   13.41ms     6.1x  PASS
+  PASS specific_humidity_from_mixing_ratio                GPU:    0.88ms CPU:    8.07ms     9.2x  PASS
+  PASS relative_humidity_from_dewpoint                    GPU:    2.32ms CPU:   14.43ms     6.2x  PASS
+  PASS relative_humidity_from_mixing_ratio                GPU:    2.93ms CPU:   16.36ms     5.6x  PASS
+  PASS relative_humidity_from_specific_humidity           GPU:    3.02ms CPU:   16.48ms     5.5x  PASS
+  PASS density                                            GPU:    2.53ms CPU:   13.95ms     5.5x  PASS
+  PASS dry_static_energy                                  GPU:    2.73ms CPU:  970.99ms   356.1x  PASS
+  PASS moist_static_energy                                GPU:    2.88ms CPU: 1277.20ms   443.3x  PASS
+  PASS exner_function                                     GPU:    1.42ms CPU:   11.07ms     7.8x  PASS
+  PASS montgomery_streamfunction                          GPU:    0.17ms CPU:    2.35ms    14.1x  PASS
+  PASS dry_lapse                                          GPU:    0.10ms CPU:    0.15ms     1.5x  PASS
   FAIL height_to_pressure_std                             only length-1 arrays can be converted to Python scalars
   FAIL pressure_to_height_std                             only length-1 arrays can be converted to Python scalars
-  PASS add_height_to_pressure                             GPU:    2.12ms CPU: 1177.77ms   556.4x  PASS
-  PASS add_pressure_to_height                             GPU:    4.29ms CPU: 1207.58ms   281.3x  PASS
+  PASS add_height_to_pressure                             GPU:    2.67ms CPU: 1328.11ms   496.7x  PASS
+  PASS add_pressure_to_height                             GPU:    4.44ms CPU: 1328.99ms   299.4x  PASS
   FAIL altimeter_to_station_pressure                      only length-1 arrays can be converted to Python scalars
   FAIL station_to_altimeter_pressure                      only length-1 arrays can be converted to Python scalars
   FAIL altimeter_to_sea_level_pressure                    only length-1 arrays can be converted to Python scalars
   FAIL sigma_to_pressure                                  only length-1 arrays can be converted to Python scalars
-  PASS geopotential_to_height                             GPU:    0.91ms CPU:  820.35ms   904.0x  PASS
-  PASS height_to_geopotential                             GPU:    0.97ms CPU:  813.22ms   834.9x  PASS
-  PASS scale_height                                       GPU:    3.57ms CPU:  810.57ms   227.1x  PASS
-  PASS heat_index                                         GPU:    2.19ms CPU: 1012.84ms   463.0x  PASS
-  PASS windchill                                          GPU:    1.98ms CPU: 1056.11ms   533.9x  PASS
-  PASS apparent_temperature                               GPU:    2.91ms CPU: 1248.86ms   428.4x  PASS
-  PASS frost_point                                        GPU:    2.03ms CPU:   16.85ms     8.3x  PASS
-  PASS psychrometric_vapor_pressure                       GPU:    0.13ms CPU:    9.38ms    73.7x  PASS
-  PASS water_latent_heat_vaporization                     GPU:    0.86ms CPU: 1004.65ms  1161.4x  PASS
-  PASS water_latent_heat_sublimation                      GPU:    0.95ms CPU:  997.90ms  1048.7x  PASS
-  PASS water_latent_heat_melting                          GPU:    0.85ms CPU: 1002.10ms  1179.5x  PASS
-  PASS moist_air_gas_constant                             GPU:    0.89ms CPU:  988.45ms  1107.9x  PASS
-  PASS moist_air_specific_heat_pressure                   GPU:    0.87ms CPU:  983.53ms  1130.2x  PASS
-  PASS moist_air_poisson_exponent                         GPU:    0.94ms CPU:  987.46ms  1050.2x  PASS
-  PASS coriolis_parameter                                 GPU:    1.04ms CPU: 1001.26ms   966.2x  PASS
-  PASS vertical_velocity                                  GPU:    2.14ms CPU: 1324.35ms   619.2x  PASS
-  PASS vertical_velocity_pressure                         GPU:    2.12ms CPU: 1327.40ms   624.9x  PASS
-  PASS thickness_hydrostatic (scalar)                     GPU:    0.06ms CPU:    0.13ms     2.2x  PASS
-  PASS brunt_vaisala_frequency_squared                    GPU:    0.05ms CPU:    0.10ms     1.9x  PASS
-  PASS brunt_vaisala_frequency                            GPU:    0.07ms CPU:    0.09ms     1.2x  PASS
-  FAIL brunt_vaisala_period                               brunt_vaisala_period() takes 1 positional argument but 2 were given
-  PASS static_stability                                   GPU:    0.08ms CPU:    0.14ms     1.8x  PASS
+  PASS geopotential_to_height                             GPU:    1.13ms CPU:  921.26ms   815.1x  PASS
+  PASS height_to_geopotential                             GPU:    0.94ms CPU:  912.22ms   970.9x  PASS
+  PASS scale_height                                       GPU:    1.08ms CPU:  916.41ms   846.7x  PASS
+  PASS heat_index                                         GPU:    2.00ms CPU: 1034.90ms   516.9x  PASS
+  PASS windchill                                          GPU:    2.24ms CPU: 1055.44ms   472.0x  PASS
+  PASS apparent_temperature                               GPU:    3.30ms CPU: 1171.94ms   355.4x  PASS
+  PASS frost_point                                        GPU:    2.24ms CPU:   14.11ms     6.3x  PASS
+  PASS psychrometric_vapor_pressure                       GPU:    0.07ms CPU:    6.44ms    89.7x  PASS
+  PASS water_latent_heat_vaporization                     GPU:    1.02ms CPU:  808.08ms   794.1x  PASS
+  PASS water_latent_heat_sublimation                      GPU:    1.09ms CPU:  816.32ms   746.0x  PASS
+  PASS water_latent_heat_melting                          GPU:    0.98ms CPU:  828.07ms   848.6x  PASS
+  PASS moist_air_gas_constant                             GPU:    1.13ms CPU:  819.89ms   723.1x  PASS
+  PASS moist_air_specific_heat_pressure                   GPU:    0.91ms CPU:  819.18ms   901.7x  PASS
+  PASS moist_air_poisson_exponent                         GPU:    1.01ms CPU:  823.28ms   817.3x  PASS
+  PASS coriolis_parameter                                 GPU:    0.94ms CPU:  830.25ms   883.1x  PASS
+  PASS vertical_velocity                                  GPU:    2.64ms CPU: 1102.26ms   417.3x  PASS
+  PASS vertical_velocity_pressure                         GPU:    2.66ms CPU: 1112.23ms   417.9x  PASS
+  PASS thickness_hydrostatic (scalar)                     GPU:    0.07ms CPU:    0.12ms     1.9x  PASS
+  PASS brunt_vaisala_frequency_squared                    GPU:    0.09ms CPU:    0.09ms     1.1x  PASS
+  PASS brunt_vaisala_frequency                            GPU:    0.09ms CPU:    0.08ms     1.0x  PASS
+  PASS brunt_vaisala_period                               GPU:    0.06ms CPU:    0.06ms     1.0x  PASS
+  PASS static_stability                                   GPU:    0.05ms CPU:    0.14ms     2.7x  PASS
 
 ==========================================================================================
  CATEGORY 2: Wind per-element -- N=1,905,141 points
 ==========================================================================================
-  PASS wind_speed                                         GPU:    1.44ms CPU:   10.47ms     7.3x  PASS
-  PASS wind_direction                                     GPU:    1.58ms CPU:   11.90ms     7.5x  PASS
-  PASS wind_components                                    GPU:    1.54ms CPU:   16.07ms    10.4x  PASS
+  PASS wind_speed                                         GPU:    1.78ms CPU:   11.32ms     6.3x  PASS
+  PASS wind_direction                                     GPU:    1.86ms CPU:   12.81ms     6.9x  PASS
+  PASS wind_components                                    GPU:    1.83ms CPU:   17.08ms     9.3x  PASS
 
 ==========================================================================================
  CATEGORY 3: Grid stencil -- 1059x1799 = 1,905,141 grid points
 ==========================================================================================
-  WARN vorticity                                          GPU:    1.79ms CPU:   83.19ms    46.4x  DIFF=0.03181
-  WARN divergence                                         GPU:    1.75ms CPU:   74.65ms    42.8x  DIFF=0.03549
-  WARN absolute_vorticity                                 GPU:    2.49ms CPU:   84.71ms    34.1x  DIFF=0.03187
-  WARN shearing_deformation                               GPU:    1.77ms CPU:   74.30ms    42.0x  DIFF=0.03276
-  WARN stretching_deformation                             GPU:    1.69ms CPU:   75.68ms    44.9x  DIFF=0.03457
-  WARN total_deformation                                  GPU:    1.75ms CPU:  139.93ms    79.9x  DIFF=0.03735
-  WARN advection                                          GPU:    2.32ms CPU:   77.55ms    33.4x  DIFF=237.4
-  WARN frontogenesis                                      GPU:    4.78ms CPU:  258.80ms    54.1x  DIFF=0.0008795
-  WARN q_vector                                           GPU:    4.41ms CPU:  244.47ms    55.4x  DIFF=0.0001209Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: smooth_circular() takes from 1 to 2 positional arguments but 3 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: inertial_advective_wind() takes 5 positional arguments but 6 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: cape_cin() takes 3 positional arguments but 11 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: cape_cin() takes 3 positional arguments but 4 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: cape_cin() takes 3 positional arguments but 4 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: bunkers_storm_motion() takes 3 positional arguments but 4 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: critical_angle() missing 2 required positional arguments: 'u_500' and 'v_500'
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-pint.errors.DimensionalityError: Cannot convert from 'degree_Celsius' ([temperature]) to 'hectopascal' ([mass] / [length] / [time] ** 2)
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-pint.errors.DimensionalityError: Cannot convert from 'degree_Celsius' ([temperature]) to 'hectopascal' ([mass] / [length] / [time] ** 2)
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: sweat_index() takes 6 positional arguments but 7 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-ValueError: Expected 2-D array (ny, nx), got 1-D
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-ValueError: Expected 2-D array (ny, nx), got 1-D
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-ValueError: Expected 2-D array (ny, nx), got 1-D
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: compute_lapse_rate() takes from 2 to 4 positional arguments but 5 were given
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: Implicit conversion to a NumPy array is not allowed. Please use `.get()` to construct a NumPy array explicitly.
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-ValueError: not enough values to unpack (expected 3, got 1)
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: mean_pressure_weighted() missing 2 required positional arguments: 'p_bottom' and 'p_top'
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-UnicodeEncodeError: 'charmap' codec can't encode character '\u2248' in position 2740: character maps to <undefined>
-
-  WARN geostrophic_wind                                   GPU:    1.91ms CPU:  120.04ms    62.8x  DIFF=5.455e+05
-  WARN ageostrophic_wind                                  GPU:    2.99ms CPU:  129.19ms    43.2x  DIFF=5.455e+05
-  WARN gradient_x                                         GPU:    1.10ms CPU:   28.50ms    26.0x  DIFF=0.04847
-  WARN gradient_y                                         GPU:    1.13ms CPU:   27.35ms    24.2x  DIFF=0.0455
-  WARN laplacian                                          GPU:    1.20ms CPU:   39.74ms    33.0x  DIFF=2.263e-05
-  WARN first_derivative (axis=0)                          GPU:    0.99ms CPU:   31.55ms    31.9x  DIFF=0.0455
-  WARN second_derivative (axis=0)                         GPU:    1.08ms CPU:   29.03ms    26.9x  DIFF=1.699e-05
-  PASS smooth_gaussian                                    GPU:   20.03ms CPU:   77.33ms     3.9x  N/A
-  PASS smooth_n_point (5)                                 GPU:    0.94ms CPU:   30.62ms    32.5x  N/A
-  PASS smooth_n_point (9)                                 GPU:    0.93ms CPU:   31.05ms    33.4x  N/A
-  PASS smooth_rectangular                                 GPU:    0.97ms CPU:   70.24ms    72.4x  N/A
-  FAIL smooth_circular                                    smooth_circular() takes from 1 to 2 positional arguments but 3 were gi
-  WARN potential_vorticity_barotropic                     GPU:    3.01ms CPU:  100.23ms    33.3x  DIFF=2.339e+04
-  WARN curvature_vorticity                                GPU:    2.49ms CPU:  162.11ms    65.2x  DIFF=0.03038
-  WARN shear_vorticity                                    GPU:    1.78ms CPU:  232.26ms   130.3x  DIFF=0.02907
-  FAIL inertial_advective_wind                            inertial_advective_wind() takes 5 positional arguments but 6 were give
-  WARN vector_derivative                                  GPU:    1.96ms CPU:  147.79ms    75.3x  DIFF=0.02829
-  PASS composite_reflectivity                             GPU:    0.18ms CPU:    0.19ms     1.1x  PASS
-  PASS lat_lon_grid_deltas                                GPU:    0.10ms CPU:    1.24ms    11.9x  N/A
+  WARN vorticity                                          GPU:    2.02ms CPU:   75.30ms    37.2x  DIFF=0.03181
+  WARN divergence                                         GPU:    3.17ms CPU:   76.04ms    24.0x  DIFF=0.03549
+  WARN absolute_vorticity                                 GPU:    2.98ms CPU:   81.49ms    27.3x  DIFF=0.03187
+  WARN shearing_deformation                               GPU:    2.01ms CPU:   74.65ms    37.1x  DIFF=0.03276
+  WARN stretching_deformation                             GPU:    2.00ms CPU:   74.24ms    37.1x  DIFF=0.03457
+  WARN total_deformation                                  GPU:    2.26ms CPU:  143.85ms    63.7x  DIFF=0.03735
+  WARN advection                                          GPU:    3.03ms CPU:   79.20ms    26.2x  DIFF=237.4
+  WARN frontogenesis                                      GPU:    5.86ms CPU:  257.24ms    43.9x  DIFF=0.0008795
+  WARN q_vector                                           GPU:    5.37ms CPU:  239.80ms    44.6x  DIFF=0.0001209
+  WARN geostrophic_wind                                   GPU:    2.24ms CPU:  117.09ms    52.3x  DIFF=5.455e+05
+  WARN ageostrophic_wind                                  GPU:    4.02ms CPU:  132.24ms    32.9x  DIFF=5.455e+05
+  WARN gradient_x                                         GPU:    1.20ms CPU:   30.27ms    25.3x  DIFF=0.04847
+  WARN gradient_y                                         GPU:    1.13ms CPU:   36.03ms    31.9x  DIFF=0.0455
+  WARN laplacian                                          GPU:    1.20ms CPU:   45.34ms    37.8x  DIFF=2.263e-05
+  WARN first_derivative (axis=0)                          GPU:    1.08ms CPU:   31.64ms    29.4x  DIFF=0.0455
+  WARN second_derivative (axis=0)                         GPU:    1.19ms CPU:   34.45ms    28.9x  DIFF=1.699e-05
+  PASS smooth_gaussian                                    GPU:   20.60ms CPU:   79.66ms     3.9x  N/A
+  PASS smooth_n_point (5)                                 GPU:    0.95ms CPU:   31.61ms    33.3x  N/A
+  PASS smooth_n_point (9)                                 GPU:    0.97ms CPU:   30.00ms    30.9x  N/A
+  PASS smooth_rectangular                                 GPU:    0.98ms CPU:   78.26ms    79.8x  N/A
+  PASS smooth_circular                                    GPU:    1.33ms CPU:   39.23ms    29.5x  N/A
+  WARN potential_vorticity_barotropic                     GPU:    3.26ms CPU:  116.88ms    35.8x  DIFF=2.339e+04
+  WARN curvature_vorticity                                GPU:    1.90ms CPU:  160.01ms    84.3x  DIFF=0.03038
+  WARN shear_vorticity                                    GPU:    2.05ms CPU:  220.96ms   107.8x  DIFF=0.02907
+  WARN inertial_advective_wind                            GPU:    6.79ms CPU:  173.38ms    25.5x  DIFF=846
+  WARN vector_derivative                                  GPU:    2.41ms CPU:  152.58ms    63.2x  DIFF=0.02829
+  PASS composite_reflectivity                             GPU:    0.09ms CPU:    0.32ms     3.7x  PASS
+  PASS lat_lon_grid_deltas                                GPU:    0.09ms CPU:    1.53ms    17.2x  N/A
 
 ==========================================================================================
  CATEGORY 4: Column/sounding -- 40 levels
 ==========================================================================================
-  PASS lcl                                                GPU:    0.07ms CPU:    0.15ms     2.2x  PASS
-  WARN lfc                                                GPU:    0.53ms CPU:    0.27ms     0.5x  DIFF=1.091e+04
-  PASS el                                                 GPU:    0.49ms CPU:    0.27ms     0.6x  PASS
-  PASS ccl                                                GPU:    0.09ms CPU:    0.23ms     2.6x  PASS
-  PASS parcel_profile                                     GPU:    2.98ms CPU:    0.24ms     0.1x  PASS
-  PASS moist_lapse                                        GPU:    3.25ms CPU:    0.14ms     0.0x  PASS
-  FAIL cape_cin (surface-based)                           cape_cin() takes 3 positional arguments but 11 were given
-  PASS surface_based_cape_cin                             GPU:    3.34ms CPU:    0.27ms     0.1x  PASS
-  FAIL mixed_layer_cape_cin                               cape_cin() takes 3 positional arguments but 4 were given
-  FAIL most_unstable_cape_cin                             cape_cin() takes 3 positional arguments but 4 were given
-  PASS lifted_index                                       GPU:    0.07ms CPU:    0.12ms     1.7x  PASS
-  WARN showalter_index                                    GPU:    0.26ms CPU:    0.18ms     0.7x  DIFF=0.1669
+  PASS lcl                                                GPU:    0.05ms CPU:    0.11ms     2.2x  PASS
+  WARN lfc                                                GPU:    0.48ms CPU:    0.18ms     0.4x  DIFF=1.091e+04
+  PASS el                                                 GPU:    0.53ms CPU:    0.18ms     0.3x  PASS
+  PASS ccl                                                GPU:    0.07ms CPU:    0.16ms     2.2x  PASS
+  PASS parcel_profile                                     GPU:    3.25ms CPU:    0.16ms     0.0x  PASS
+  PASS moist_lapse                                        GPU:    3.15ms CPU:    0.13ms     0.0x  PASS
+  WARN cape_cin (surface-based)                           GPU:    3.42ms CPU:    0.34ms     0.1x  DIFF=20.96
+  PASS surface_based_cape_cin                             GPU:    3.49ms CPU:    0.27ms     0.1x  PASS
+  WARN mixed_layer_cape_cin                               GPU:    3.30ms CPU:    0.28ms     0.1x  DIFF=157.5
+  PASS most_unstable_cape_cin                             GPU:    3.66ms CPU:    0.26ms     0.1x  PASS
+  PASS lifted_index                                       GPU:    0.08ms CPU:    0.13ms     1.6x  PASS
+  WARN showalter_index                                    GPU:    0.24ms CPU:    0.12ms     0.5x  DIFF=0.1669
   PASS precipitable_water                                 GPU:    0.16ms CPU:    0.12ms     0.8x  PASS
-  PASS downdraft_cape                                     GPU:    1.57ms CPU:    0.26ms     0.2x  PASS
+  PASS downdraft_cape                                     GPU:    1.53ms CPU:    0.19ms     0.1x  PASS
   PASS bulk_shear                                         GPU:    0.11ms CPU:    0.17ms     1.5x  PASS
-  WARN mean_wind                                          GPU:    0.11ms CPU:    0.21ms     2.0x  DIFF=0.2804
-  PASS storm_relative_helicity                            GPU:    0.12ms CPU:    0.24ms     2.0x  PASS
-  FAIL bunkers_storm_motion                               bunkers_storm_motion() takes 3 positional arguments but 4 were given
-  FAIL critical_angle                                     critical_angle() missing 2 required positional arguments: 'u_500' and 
-  WARN k_index                                            GPU:    0.05ms CPU:    0.06ms     1.1x  DIFF=54
-  FAIL total_totals                                       Cannot convert from 'degree_Celsius' ([temperature]) to 'hectopascal' 
-  PASS cross_totals                                       GPU:    0.05ms CPU:    0.03ms     0.6x  PASS
-  FAIL vertical_totals                                    Cannot convert from 'degree_Celsius' ([temperature]) to 'hectopascal' 
-  FAIL sweat_index                                        sweat_index() takes 6 positional arguments but 7 were given
-  PASS significant_tornado_parameter                      GPU:    0.06ms CPU:    0.19ms     3.0x  PASS
-  PASS supercell_composite_parameter                      GPU:    0.08ms CPU:    0.19ms     2.4x  PASS
-  FAIL compute_ehi                                        Expected 2-D array (ny, nx), got 1-D
-  FAIL compute_ship                                       Expected 2-D array (ny, nx), got 1-D
-  FAIL compute_dcp                                        Expected 2-D array (ny, nx), got 1-D
-  PASS bulk_richardson_number                             GPU:    0.08ms CPU:    0.18ms     2.4x  PASS
-  PASS boyden_index                                       GPU:    0.07ms CPU:    0.05ms     0.7x  PASS
-  WARN fosberg_fire_weather_index                         GPU:    0.10ms CPU:    0.09ms     0.9x  DIFF=0.02215
-  PASS haines_index                                       GPU:    0.05ms CPU:    0.06ms     1.2x  PASS
-  WARN hot_dry_windy                                      GPU:    0.07ms CPU:    0.08ms     1.0x  DIFF=0.637
-  WARN dendritic_growth_zone                              GPU:    0.10ms CPU:    0.15ms     1.5x  DIFF=62.99
-  PASS warm_nose_check                                    GPU:    0.07ms CPU:    0.09ms     1.4x  N/A
-  PASS freezing_rain_composite                            GPU:    0.10ms CPU:    0.10ms     1.0x  PASS
-  FAIL compute_lapse_rate                                 compute_lapse_rate() takes from 2 to 4 positional arguments but 5 were
+  WARN mean_wind                                          GPU:    0.11ms CPU:    0.21ms     1.9x  DIFF=0.2804
+  PASS storm_relative_helicity                            GPU:    0.12ms CPU:    0.23ms     1.9x  PASS
+  WARN bunkers_storm_motion                               GPU:    0.14ms CPU:    0.18ms     1.3x  ERR:setting an array element with 
+  PASS critical_angle                                     GPU:    0.09ms CPU:    0.05ms     0.6x  N/A
+  PASS k_index                                            GPU:    0.05ms CPU:    0.06ms     1.1x  PASS
+  PASS total_totals                                       GPU:    0.04ms CPU:    0.00ms     0.1x  PASS
+  PASS cross_totals                                       GPU:    0.03ms CPU:    0.03ms     1.0x  PASS
+  PASS vertical_totals                                    GPU:    0.03ms CPU:    0.00ms     0.1x  PASS
+  PASS sweat_index                                        GPU:    0.10ms CPU:    0.09ms     0.8x  PASS
+  PASS significant_tornado_parameter                      GPU:    0.07ms CPU:    0.19ms     2.9x  PASS
+  PASS supercell_composite_parameter                      GPU:    0.05ms CPU:    0.18ms     3.4x  PASS
+  PASS compute_ehi                                        GPU:    0.08ms CPU:    0.15ms     1.8x  PASS
+  PASS compute_ship                                       GPU:    0.09ms CPU:    0.26ms     3.1x  PASS
+  WARN compute_dcp                                        GPU:    0.10ms CPU:    0.24ms     2.4x  DIFF=0.3479
+  PASS bulk_richardson_number                             GPU:    0.08ms CPU:    0.12ms     1.6x  PASS
+  PASS boyden_index                                       GPU:    0.09ms CPU:    0.04ms     0.5x  PASS
+  WARN fosberg_fire_weather_index                         GPU:    0.06ms CPU:    0.06ms     0.9x  DIFF=0.02215
+  PASS haines_index                                       GPU:    0.03ms CPU:    0.03ms     1.0x  PASS
+  WARN hot_dry_windy                                      GPU:    0.09ms CPU:    0.08ms     0.9x  DIFF=0.637
+  WARN dendritic_growth_zone                              GPU:    0.08ms CPU:    0.15ms     1.8x  DIFF=62.99
+  PASS warm_nose_check                                    GPU:    0.07ms CPU:    0.09ms     1.3x  N/A
+  PASS freezing_rain_composite                            GPU:    0.13ms CPU:    0.10ms     0.8x  PASS
+  PASS compute_lapse_rate                                 GPU:    0.69ms CPU:    1.43ms     2.1x  N/A
   WARN convective_inhibition_depth                        GPU:    0.10ms CPU:    0.14ms     1.4x  DIFF=92.31
-  WARN parcel_profile_with_lcl                            GPU:    2.89ms CPU:    0.18ms     0.1x  DIFF=975
-  WARN mixed_layer                                        GPU:    0.10ms CPU:    0.10ms     1.0x  DIFF=4.416
-  PASS get_mixed_layer_parcel                             GPU:    0.12ms CPU:    0.16ms     1.4x  PASS
-  PASS get_most_unstable_parcel                           GPU:    0.26ms CPU:    0.17ms     0.7x  PASS
-  PASS mixed_parcel                                       GPU:    0.17ms CPU:    0.16ms     1.0x  PASS
-  PASS most_unstable_parcel                               GPU:    0.19ms CPU:    0.22ms     1.2x  PASS
-  FAIL get_layer                                          Implicit conversion to a NumPy array is not allowed. Please use `.get(
-  FAIL get_layer_heights                                  not enough values to unpack (expected 3, got 1)
-  FAIL mean_pressure_weighted                             mean_pressure_weighted() missing 2 required positional arguments: 'p_b
-  PASS gradient_richardson_number                         GPU:    0.16ms CPU:    0.23ms     1.5x  PASS
-  FAIL galvez_davison_index                               'charmap' codec can't encode character '\u2248' in position 2740: char
-  WARN corfidi_storm_motion                               GPU:    0.10ms CPU:    0.23ms     2.2x  ERR:setting an array element with 
-  PASS friction_velocity                                  GPU:    0.13ms CPU:    0.13ms     1.0x  PASS
-  PASS tke                                                GPU:    0.10ms CPU:    0.20ms     2.0x  PASS
-  PASS weighted_continuous_average                        GPU:    0.22ms CPU:    0.00ms     0.0x  PASSTraceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: normal_component() missing 2 required positional arguments: 'end_lat' and 'end_lon'
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-TypeError: tangential_component() missing 2 required positional arguments: 'end_lat' and 'end_lon'
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 133, in test_func
-    cpu_result = cpu_call()
-pint.errors.DimensionalityError: Cannot convert from 'degree_Celsius' ([temperature]) to 'dimensionless' (dimensionless)
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: unit_vectors_from_cross_section() missing 2 required positional arguments: 'end_lat' and 'end_lon'
-Traceback (most recent call last):
-  File "C:\Users\drew\met-cu\tests\benchmark_complete.py", line 123, in test_func
-    gpu_result = gpu_call()
-TypeError: isentropic_interpolation() takes 4 positional arguments but 7 were given
-
-  WARN thickness_hydrostatic_from_relative_humidity       GPU:    0.38ms CPU:    0.20ms     0.5x  DIFF=1.843e+04
-  PASS compute_stp                                        GPU:    0.11ms CPU:    0.42ms     3.8x  PASS
-  WARN compute_scp                                        GPU:    0.09ms CPU:    0.37ms     3.9x  DIFF=4.5
-  FAIL normal_component                                   normal_component() missing 2 required positional arguments: 'end_lat' 
-  FAIL tangential_component                               tangential_component() missing 2 required positional arguments: 'end_l
-  FAIL kinematic_flux                                     Cannot convert from 'degree_Celsius' ([temperature]) to 'dimensionless
-  WARN cross_section_components                           GPU:    0.15ms CPU:    0.23ms     1.5x  DIFF=1.607
+  WARN parcel_profile_with_lcl                            GPU:    2.89ms CPU:    0.17ms     0.1x  DIFF=975
+  WARN mixed_layer                                        GPU:    0.08ms CPU:    0.10ms     1.1x  DIFF=4.416
+  PASS get_mixed_layer_parcel                             GPU:    0.09ms CPU:    0.16ms     1.9x  PASS
+  PASS get_most_unstable_parcel                           GPU:    0.18ms CPU:    0.17ms     0.9x  PASS
+  PASS mixed_parcel                                       GPU:    0.09ms CPU:    0.16ms     1.8x  PASS
+  PASS most_unstable_parcel                               GPU:    0.21ms CPU:    0.17ms     0.8x  PASS
+  PASS get_layer                                          GPU:    0.11ms CPU:    0.23ms     2.1x  PASS
+  WARN get_layer_heights                                  GPU:    0.05ms CPU:    0.25ms     5.0x  DIFF=1000
+  PASS mean_pressure_weighted                             GPU:    0.10ms CPU:    0.00ms     0.0x  PASS
+  PASS gradient_richardson_number                         GPU:    0.12ms CPU:    0.17ms     1.5x  PASS
+  WARN galvez_davison_index                               GPU:    0.12ms CPU:    0.10ms     0.9x  DIFF=19.29
+  WARN corfidi_storm_motion                               GPU:    0.13ms CPU:    0.22ms     1.7x  ERR:setting an array element with 
+  PASS friction_velocity                                  GPU:    0.10ms CPU:    0.13ms     1.3x  PASS
+  PASS tke                                                GPU:    0.10ms CPU:    0.20ms     1.9x  PASS
+  PASS weighted_continuous_average                        GPU:    0.14ms CPU:    0.00ms     0.0x  PASS
+  PASS thickness_hydrostatic_from_relative_humidity       GPU:    0.23ms CPU:    0.12ms     0.5x  PASS
+  PASS compute_stp                                        GPU:    0.08ms CPU:    0.26ms     3.1x  PASS
+  PASS compute_scp                                        GPU:    0.12ms CPU:    0.22ms     1.8x  PASS
+  PASS normal_component                                   GPU:    0.08ms CPU:    0.04ms     0.4x  PASS
+  PASS tangential_component                               GPU:    0.08ms CPU:    0.03ms     0.4x  PASS
+  PASS kinematic_flux                                     GPU:    0.07ms CPU:    0.06ms     0.9x  PASS
+  WARN cross_section_components                           GPU:    0.11ms CPU:    0.15ms     1.4x  DIFF=1.607
   PASS get_perturbation                                   GPU:    0.08ms CPU:    0.08ms     1.0x  PASS
-  WARN relative_humidity_wet_psychrometric                GPU:    0.09ms CPU:    7.95ms    86.7x  DIFF=1927
-  PASS psychrometric_vapor_pressure_wet                   GPU:    0.08ms CPU:    6.70ms    86.4x  PASS
-  WARN absolute_momentum                                  GPU:    0.08ms CPU:    0.47ms     5.7x  DIFF=1.972
-  PASS advection_3d                                       GPU:    2.70ms CPU:    7.05ms     2.6x  N/A
-  PASS geospatial_gradient                                GPU:    0.50ms CPU:    1.29ms     2.6x  N/A
-  PASS geospatial_laplacian                               GPU:    0.79ms CPU:    1.21ms     1.5x  N/A
-  WARN compute_grid_scp                                   GPU:    0.21ms CPU:    0.70ms     3.4x  DIFF=4.5
-  WARN compute_grid_critical_angle                        GPU:    0.21ms CPU:    0.61ms     2.9x  DIFF=157.4
-  FAIL unit_vectors_from_cross_section                    unit_vectors_from_cross_section() missing 2 required positional argume
-  FAIL isentropic_interpolation                           isentropic_interpolation() takes 4 positional arguments but 7 were giv
+  WARN relative_humidity_wet_psychrometric                GPU:    0.10ms CPU:    7.09ms    69.5x  DIFF=1927
+  PASS psychrometric_vapor_pressure_wet                   GPU:    0.08ms CPU:    6.65ms    85.3x  PASS
+  WARN absolute_momentum                                  GPU:    0.09ms CPU:    0.52ms     5.7x  DIFF=1.972
+  PASS advection_3d                                       GPU:    2.41ms CPU:    7.36ms     3.1x  N/A
+  PASS geospatial_gradient                                GPU:    0.55ms CPU:    1.28ms     2.3x  N/A
+  PASS geospatial_laplacian                               GPU:    0.84ms CPU:    1.21ms     1.4x  N/A
+  PASS compute_grid_scp                                   GPU:    0.17ms CPU:    0.79ms     4.7x  PASS
+  WARN compute_grid_critical_angle                        GPU:    0.25ms CPU:    0.72ms     2.9x  DIFF=157.4
+  PASS unit_vectors_from_cross_section                    GPU:    0.00ms CPU:    0.00ms     0.6x  N/A
+  PASS isentropic_interpolation                           GPU:    0.62ms CPU:    7.83ms    12.6x  N/A
 
 ==========================================================================================
  CATEGORY 5: CPU-only utilities -- SKIP (no GPU benefit)
@@ -353,187 +227,187 @@ TypeError: isentropic_interpolation() takes 4 positional arguments but 7 were gi
 ==========================================================================================
 
   Total functions tested:         202
-  PASS (speed + accuracy):        79
-  N/A  (speed OK, no verify):     9
+  PASS (speed + accuracy):        99
+  N/A  (speed OK, no verify):     14
   WARN (speed OK, accuracy diff): 42
-  FAIL (crashed):                 31
+  FAIL (crashed):                 6
   SKIP (CPU-only/not impl):       41
 
-  Average speedup (Per-element thermo       ):   287.0x  (min=1.2x, max=1179.5x, n=50)
-  Average speedup (Wind per-element         ):     8.4x  (min=7.3x, max=10.4x, n=3)
-  Average speedup (Grid stencil             ):    43.8x  (min=1.1x, max=130.3x, n=26)
-  Average speedup (Column/sounding          ):     4.9x  (min=0.0x, max=86.7x, n=51)
+  Average speedup (Per-element thermo       ):   238.4x  (min=1.0x, max=970.9x, n=52)
+  Average speedup (Wind per-element         ):     7.5x  (min=6.3x, max=9.3x, n=3)
+  Average speedup (Grid stencil             ):    39.1x  (min=3.7x, max=107.8x, n=28)
+  Average speedup (Column/sounding          ):     3.7x  (min=0.0x, max=85.3x, n=72)
 
-  Max speedup: water_latent_heat_melting 1179.5x
+  Max speedup: height_to_geopotential 970.9x
 
-  Accuracy: 79/130 within rtol=1e-4, atol=1e-6
+  Accuracy: 99/155 within rtol=1e-4, atol=1e-6
 
 ==========================================================================================
  DETAILED RESULTS
 ==========================================================================================
   Function                                             GPU ms   CPU ms  Speedup Accuracy            
   -------------------------------------------------- -------- -------- -------- --------------------
-  potential_temperature                                  1.98    11.80     5.9x PASS                
-  temperature_from_potential_temperature                 1.97    11.20     5.7x PASS                
-  virtual_temperature_from_dewpoint                      2.58    17.03     6.6x PASS                
-  virtual_potential_temperature                          2.68    15.32     5.7x DIFF=4555           
-  equivalent_potential_temperature                       3.45    19.31     5.6x PASS                
-  saturation_equivalent_potential_temperature            2.67    16.86     6.3x PASS                
-  wet_bulb_temperature                                   3.65    21.07     5.8x PASS                
-  wet_bulb_potential_temperature                         3.63    19.44     5.4x PASS                
-  saturation_vapor_pressure                              1.35     9.99     7.4x PASS                
-  vapor_pressure                                         1.40    10.00     7.2x PASS                
-  dewpoint                                               0.11     0.98     9.2x PASS                
-  dewpoint_from_relative_humidity                        2.16    10.76     5.0x PASS                
-  dewpoint_from_specific_humidity                        2.08    13.74     6.6x PASS                
-  mixing_ratio                                           0.00     0.00      N/A FAIL:mixing_ratio() takes 2 positional argume
-  saturation_mixing_ratio                                2.23    13.72     6.1x PASS                
-  mixing_ratio_from_relative_humidity                    2.92    15.81     5.4x PASS                
-  mixing_ratio_from_specific_humidity                    1.08     7.77     7.2x PASS                
-  specific_humidity_from_dewpoint                        2.31    13.17     5.7x PASS                
-  specific_humidity_from_mixing_ratio                    0.99     8.31     8.4x PASS                
-  relative_humidity_from_dewpoint                        2.55    14.33     5.6x PASS                
-  relative_humidity_from_mixing_ratio                    3.02    17.32     5.7x DIFF=1.972e+07      
-  relative_humidity_from_specific_humidity               3.21    17.23     5.4x DIFF=1.952e+04      
-  density                                                2.93    13.67     4.7x DIFF=1.369          
-  dry_static_energy                                      1.76   965.20   548.6x PASS                
-  moist_static_energy                                    2.61  1112.86   426.7x PASS                
-  exner_function                                         1.10     9.69     8.8x PASS                
-  montgomery_streamfunction                              0.11     2.05    19.3x PASS                
-  dry_lapse                                              0.08     0.12     1.4x PASS                
+  potential_temperature                                  2.03    12.74     6.3x PASS                
+  temperature_from_potential_temperature                 1.92    11.29     5.9x PASS                
+  virtual_temperature_from_dewpoint                      2.67    16.62     6.2x PASS                
+  virtual_potential_temperature                          2.67    15.28     5.7x PASS                
+  equivalent_potential_temperature                       3.40    18.92     5.6x PASS                
+  saturation_equivalent_potential_temperature            2.54    15.89     6.3x PASS                
+  wet_bulb_temperature                                   3.37    19.45     5.8x PASS                
+  wet_bulb_potential_temperature                         4.82    20.62     4.3x PASS                
+  saturation_vapor_pressure                              1.22     9.90     8.1x PASS                
+  vapor_pressure                                         1.27    10.55     8.3x PASS                
+  dewpoint                                               0.10     1.17    11.2x PASS                
+  dewpoint_from_relative_humidity                        2.14    11.13     5.2x PASS                
+  dewpoint_from_specific_humidity                        1.81    11.77     6.5x PASS                
+  mixing_ratio                                           2.13    12.96     6.1x DIFF=2.491          
+  saturation_mixing_ratio                                2.01    13.10     6.5x PASS                
+  mixing_ratio_from_relative_humidity                    2.79    16.04     5.8x PASS                
+  mixing_ratio_from_specific_humidity                    1.03     8.54     8.3x PASS                
+  specific_humidity_from_dewpoint                        2.19    13.41     6.1x PASS                
+  specific_humidity_from_mixing_ratio                    0.88     8.07     9.2x PASS                
+  relative_humidity_from_dewpoint                        2.32    14.43     6.2x PASS                
+  relative_humidity_from_mixing_ratio                    2.93    16.36     5.6x PASS                
+  relative_humidity_from_specific_humidity               3.02    16.48     5.5x PASS                
+  density                                                2.53    13.95     5.5x PASS                
+  dry_static_energy                                      2.73   970.99   356.1x PASS                
+  moist_static_energy                                    2.88  1277.20   443.3x PASS                
+  exner_function                                         1.42    11.07     7.8x PASS                
+  montgomery_streamfunction                              0.17     2.35    14.1x PASS                
+  dry_lapse                                              0.10     0.15     1.5x PASS                
   height_to_pressure_std                                 0.00     0.00      N/A FAIL:only length-1 arrays can be converted to
   pressure_to_height_std                                 0.00     0.00      N/A FAIL:only length-1 arrays can be converted to
-  add_height_to_pressure                                 2.12  1177.77   556.4x PASS                
-  add_pressure_to_height                                 4.29  1207.58   281.3x PASS                
+  add_height_to_pressure                                 2.67  1328.11   496.7x PASS                
+  add_pressure_to_height                                 4.44  1328.99   299.4x PASS                
   altimeter_to_station_pressure                          0.00     0.00      N/A FAIL:only length-1 arrays can be converted to
   station_to_altimeter_pressure                          0.00     0.00      N/A FAIL:only length-1 arrays can be converted to
   altimeter_to_sea_level_pressure                        0.00     0.00      N/A FAIL:only length-1 arrays can be converted to
   sigma_to_pressure                                      0.00     0.00      N/A FAIL:only length-1 arrays can be converted to
-  geopotential_to_height                                 0.91   820.35   904.0x PASS                
-  height_to_geopotential                                 0.97   813.22   834.9x PASS                
-  scale_height                                           3.57   810.57   227.1x PASS                
-  heat_index                                             2.19  1012.84   463.0x PASS                
-  windchill                                              1.98  1056.11   533.9x PASS                
-  apparent_temperature                                   2.91  1248.86   428.4x PASS                
-  frost_point                                            2.03    16.85     8.3x PASS                
-  psychrometric_vapor_pressure                           0.13     9.38    73.7x PASS                
-  water_latent_heat_vaporization                         0.86  1004.65  1161.4x PASS                
-  water_latent_heat_sublimation                          0.95   997.90  1048.7x PASS                
-  water_latent_heat_melting                              0.85  1002.10  1179.5x PASS                
-  moist_air_gas_constant                                 0.89   988.45  1107.9x PASS                
-  moist_air_specific_heat_pressure                       0.87   983.53  1130.2x PASS                
-  moist_air_poisson_exponent                             0.94   987.46  1050.2x PASS                
-  coriolis_parameter                                     1.04  1001.26   966.2x PASS                
-  vertical_velocity                                      2.14  1324.35   619.2x PASS                
-  vertical_velocity_pressure                             2.12  1327.40   624.9x PASS                
-  thickness_hydrostatic (scalar)                         0.06     0.13     2.2x PASS                
-  brunt_vaisala_frequency_squared                        0.05     0.10     1.9x PASS                
-  brunt_vaisala_frequency                                0.07     0.09     1.2x PASS                
-  brunt_vaisala_period                                   0.00     0.00      N/A FAIL:brunt_vaisala_period() takes 1 positiona
-  static_stability                                       0.08     0.14     1.8x PASS                
-  wind_speed                                             1.44    10.47     7.3x PASS                
-  wind_direction                                         1.58    11.90     7.5x PASS                
-  wind_components                                        1.54    16.07    10.4x PASS                
-  vorticity                                              1.79    83.19    46.4x DIFF=0.03181        
-  divergence                                             1.75    74.65    42.8x DIFF=0.03549        
-  absolute_vorticity                                     2.49    84.71    34.1x DIFF=0.03187        
-  shearing_deformation                                   1.77    74.30    42.0x DIFF=0.03276        
-  stretching_deformation                                 1.69    75.68    44.9x DIFF=0.03457        
-  total_deformation                                      1.75   139.93    79.9x DIFF=0.03735        
-  advection                                              2.32    77.55    33.4x DIFF=237.4          
-  frontogenesis                                          4.78   258.80    54.1x DIFF=0.0008795      
-  q_vector                                               4.41   244.47    55.4x DIFF=0.0001209      
-  geostrophic_wind                                       1.91   120.04    62.8x DIFF=5.455e+05      
-  ageostrophic_wind                                      2.99   129.19    43.2x DIFF=5.455e+05      
-  gradient_x                                             1.10    28.50    26.0x DIFF=0.04847        
-  gradient_y                                             1.13    27.35    24.2x DIFF=0.0455         
-  laplacian                                              1.20    39.74    33.0x DIFF=2.263e-05      
-  first_derivative (axis=0)                              0.99    31.55    31.9x DIFF=0.0455         
-  second_derivative (axis=0)                             1.08    29.03    26.9x DIFF=1.699e-05      
-  smooth_gaussian                                       20.03    77.33     3.9x N/A                 
-  smooth_n_point (5)                                     0.94    30.62    32.5x N/A                 
-  smooth_n_point (9)                                     0.93    31.05    33.4x N/A                 
-  smooth_rectangular                                     0.97    70.24    72.4x N/A                 
-  smooth_circular                                        0.00     0.00      N/A FAIL:smooth_circular() takes from 1 to 2 posi
-  potential_vorticity_barotropic                         3.01   100.23    33.3x DIFF=2.339e+04      
-  curvature_vorticity                                    2.49   162.11    65.2x DIFF=0.03038        
-  shear_vorticity                                        1.78   232.26   130.3x DIFF=0.02907        
-  inertial_advective_wind                                0.00     0.00      N/A FAIL:inertial_advective_wind() takes 5 positi
-  vector_derivative                                      1.96   147.79    75.3x DIFF=0.02829        
-  composite_reflectivity                                 0.18     0.19     1.1x PASS                
-  lat_lon_grid_deltas                                    0.10     1.24    11.9x N/A                 
-  lcl                                                    0.07     0.15     2.2x PASS                
-  lfc                                                    0.53     0.27     0.5x DIFF=1.091e+04      
-  el                                                     0.49     0.27     0.6x PASS                
-  ccl                                                    0.09     0.23     2.6x PASS                
-  parcel_profile                                         2.98     0.24     0.1x PASS                
-  moist_lapse                                            3.25     0.14     0.0x PASS                
-  cape_cin (surface-based)                               0.00     0.00      N/A FAIL:cape_cin() takes 3 positional arguments 
-  surface_based_cape_cin                                 3.34     0.27     0.1x PASS                
-  mixed_layer_cape_cin                                   0.00     0.00      N/A FAIL:cape_cin() takes 3 positional arguments 
-  most_unstable_cape_cin                                 0.00     0.00      N/A FAIL:cape_cin() takes 3 positional arguments 
-  lifted_index                                           0.07     0.12     1.7x PASS                
-  showalter_index                                        0.26     0.18     0.7x DIFF=0.1669         
+  geopotential_to_height                                 1.13   921.26   815.1x PASS                
+  height_to_geopotential                                 0.94   912.22   970.9x PASS                
+  scale_height                                           1.08   916.41   846.7x PASS                
+  heat_index                                             2.00  1034.90   516.9x PASS                
+  windchill                                              2.24  1055.44   472.0x PASS                
+  apparent_temperature                                   3.30  1171.94   355.4x PASS                
+  frost_point                                            2.24    14.11     6.3x PASS                
+  psychrometric_vapor_pressure                           0.07     6.44    89.7x PASS                
+  water_latent_heat_vaporization                         1.02   808.08   794.1x PASS                
+  water_latent_heat_sublimation                          1.09   816.32   746.0x PASS                
+  water_latent_heat_melting                              0.98   828.07   848.6x PASS                
+  moist_air_gas_constant                                 1.13   819.89   723.1x PASS                
+  moist_air_specific_heat_pressure                       0.91   819.18   901.7x PASS                
+  moist_air_poisson_exponent                             1.01   823.28   817.3x PASS                
+  coriolis_parameter                                     0.94   830.25   883.1x PASS                
+  vertical_velocity                                      2.64  1102.26   417.3x PASS                
+  vertical_velocity_pressure                             2.66  1112.23   417.9x PASS                
+  thickness_hydrostatic (scalar)                         0.07     0.12     1.9x PASS                
+  brunt_vaisala_frequency_squared                        0.09     0.09     1.1x PASS                
+  brunt_vaisala_frequency                                0.09     0.08     1.0x PASS                
+  brunt_vaisala_period                                   0.06     0.06     1.0x PASS                
+  static_stability                                       0.05     0.14     2.7x PASS                
+  wind_speed                                             1.78    11.32     6.3x PASS                
+  wind_direction                                         1.86    12.81     6.9x PASS                
+  wind_components                                        1.83    17.08     9.3x PASS                
+  vorticity                                              2.02    75.30    37.2x DIFF=0.03181        
+  divergence                                             3.17    76.04    24.0x DIFF=0.03549        
+  absolute_vorticity                                     2.98    81.49    27.3x DIFF=0.03187        
+  shearing_deformation                                   2.01    74.65    37.1x DIFF=0.03276        
+  stretching_deformation                                 2.00    74.24    37.1x DIFF=0.03457        
+  total_deformation                                      2.26   143.85    63.7x DIFF=0.03735        
+  advection                                              3.03    79.20    26.2x DIFF=237.4          
+  frontogenesis                                          5.86   257.24    43.9x DIFF=0.0008795      
+  q_vector                                               5.37   239.80    44.6x DIFF=0.0001209      
+  geostrophic_wind                                       2.24   117.09    52.3x DIFF=5.455e+05      
+  ageostrophic_wind                                      4.02   132.24    32.9x DIFF=5.455e+05      
+  gradient_x                                             1.20    30.27    25.3x DIFF=0.04847        
+  gradient_y                                             1.13    36.03    31.9x DIFF=0.0455         
+  laplacian                                              1.20    45.34    37.8x DIFF=2.263e-05      
+  first_derivative (axis=0)                              1.08    31.64    29.4x DIFF=0.0455         
+  second_derivative (axis=0)                             1.19    34.45    28.9x DIFF=1.699e-05      
+  smooth_gaussian                                       20.60    79.66     3.9x N/A                 
+  smooth_n_point (5)                                     0.95    31.61    33.3x N/A                 
+  smooth_n_point (9)                                     0.97    30.00    30.9x N/A                 
+  smooth_rectangular                                     0.98    78.26    79.8x N/A                 
+  smooth_circular                                        1.33    39.23    29.5x N/A                 
+  potential_vorticity_barotropic                         3.26   116.88    35.8x DIFF=2.339e+04      
+  curvature_vorticity                                    1.90   160.01    84.3x DIFF=0.03038        
+  shear_vorticity                                        2.05   220.96   107.8x DIFF=0.02907        
+  inertial_advective_wind                                6.79   173.38    25.5x DIFF=846            
+  vector_derivative                                      2.41   152.58    63.2x DIFF=0.02829        
+  composite_reflectivity                                 0.09     0.32     3.7x PASS                
+  lat_lon_grid_deltas                                    0.09     1.53    17.2x N/A                 
+  lcl                                                    0.05     0.11     2.2x PASS                
+  lfc                                                    0.48     0.18     0.4x DIFF=1.091e+04      
+  el                                                     0.53     0.18     0.3x PASS                
+  ccl                                                    0.07     0.16     2.2x PASS                
+  parcel_profile                                         3.25     0.16     0.0x PASS                
+  moist_lapse                                            3.15     0.13     0.0x PASS                
+  cape_cin (surface-based)                               3.42     0.34     0.1x DIFF=20.96          
+  surface_based_cape_cin                                 3.49     0.27     0.1x PASS                
+  mixed_layer_cape_cin                                   3.30     0.28     0.1x DIFF=157.5          
+  most_unstable_cape_cin                                 3.66     0.26     0.1x PASS                
+  lifted_index                                           0.08     0.13     1.6x PASS                
+  showalter_index                                        0.24     0.12     0.5x DIFF=0.1669         
   precipitable_water                                     0.16     0.12     0.8x PASS                
-  downdraft_cape                                         1.57     0.26     0.2x PASS                
+  downdraft_cape                                         1.53     0.19     0.1x PASS                
   bulk_shear                                             0.11     0.17     1.5x PASS                
-  mean_wind                                              0.11     0.21     2.0x DIFF=0.2804         
-  storm_relative_helicity                                0.12     0.24     2.0x PASS                
-  bunkers_storm_motion                                   0.00     0.00      N/A FAIL:bunkers_storm_motion() takes 3 positiona
-  critical_angle                                         0.00     0.00      N/A FAIL:critical_angle() missing 2 required posi
-  k_index                                                0.05     0.06     1.1x DIFF=54             
-  total_totals                                           0.00     0.00      N/A FAIL:Cannot convert from 'degree_Celsius' ([t
-  cross_totals                                           0.05     0.03     0.6x PASS                
-  vertical_totals                                        0.00     0.00      N/A FAIL:Cannot convert from 'degree_Celsius' ([t
-  sweat_index                                            0.00     0.00      N/A FAIL:sweat_index() takes 6 positional argumen
-  significant_tornado_parameter                          0.06     0.19     3.0x PASS                
-  supercell_composite_parameter                          0.08     0.19     2.4x PASS                
-  compute_ehi                                            0.00     0.00      N/A FAIL:Expected 2-D array (ny, nx), got 1-D
-  compute_ship                                           0.00     0.00      N/A FAIL:Expected 2-D array (ny, nx), got 1-D
-  compute_dcp                                            0.00     0.00      N/A FAIL:Expected 2-D array (ny, nx), got 1-D
-  bulk_richardson_number                                 0.08     0.18     2.4x PASS                
-  boyden_index                                           0.07     0.05     0.7x PASS                
-  fosberg_fire_weather_index                             0.10     0.09     0.9x DIFF=0.02215        
-  haines_index                                           0.05     0.06     1.2x PASS                
-  hot_dry_windy                                          0.07     0.08     1.0x DIFF=0.637          
-  dendritic_growth_zone                                  0.10     0.15     1.5x DIFF=62.99          
-  warm_nose_check                                        0.07     0.09     1.4x N/A                 
-  freezing_rain_composite                                0.10     0.10     1.0x PASS                
-  compute_lapse_rate                                     0.00     0.00      N/A FAIL:compute_lapse_rate() takes from 2 to 4 p
+  mean_wind                                              0.11     0.21     1.9x DIFF=0.2804         
+  storm_relative_helicity                                0.12     0.23     1.9x PASS                
+  bunkers_storm_motion                                   0.14     0.18     1.3x ERR:setting an array element with 
+  critical_angle                                         0.09     0.05     0.6x N/A                 
+  k_index                                                0.05     0.06     1.1x PASS                
+  total_totals                                           0.04     0.00     0.1x PASS                
+  cross_totals                                           0.03     0.03     1.0x PASS                
+  vertical_totals                                        0.03     0.00     0.1x PASS                
+  sweat_index                                            0.10     0.09     0.8x PASS                
+  significant_tornado_parameter                          0.07     0.19     2.9x PASS                
+  supercell_composite_parameter                          0.05     0.18     3.4x PASS                
+  compute_ehi                                            0.08     0.15     1.8x PASS                
+  compute_ship                                           0.09     0.26     3.1x PASS                
+  compute_dcp                                            0.10     0.24     2.4x DIFF=0.3479         
+  bulk_richardson_number                                 0.08     0.12     1.6x PASS                
+  boyden_index                                           0.09     0.04     0.5x PASS                
+  fosberg_fire_weather_index                             0.06     0.06     0.9x DIFF=0.02215        
+  haines_index                                           0.03     0.03     1.0x PASS                
+  hot_dry_windy                                          0.09     0.08     0.9x DIFF=0.637          
+  dendritic_growth_zone                                  0.08     0.15     1.8x DIFF=62.99          
+  warm_nose_check                                        0.07     0.09     1.3x N/A                 
+  freezing_rain_composite                                0.13     0.10     0.8x PASS                
+  compute_lapse_rate                                     0.69     1.43     2.1x N/A                 
   convective_inhibition_depth                            0.10     0.14     1.4x DIFF=92.31          
-  parcel_profile_with_lcl                                2.89     0.18     0.1x DIFF=975            
-  mixed_layer                                            0.10     0.10     1.0x DIFF=4.416          
-  get_mixed_layer_parcel                                 0.12     0.16     1.4x PASS                
-  get_most_unstable_parcel                               0.26     0.17     0.7x PASS                
-  mixed_parcel                                           0.17     0.16     1.0x PASS                
-  most_unstable_parcel                                   0.19     0.22     1.2x PASS                
-  get_layer                                              0.00     0.00      N/A FAIL:Implicit conversion to a NumPy array is 
-  get_layer_heights                                      0.00     0.00      N/A FAIL:not enough values to unpack (expected 3,
-  mean_pressure_weighted                                 0.00     0.00      N/A FAIL:mean_pressure_weighted() missing 2 requi
-  gradient_richardson_number                             0.16     0.23     1.5x PASS                
-  galvez_davison_index                                   0.00     0.00      N/A FAIL:'charmap' codec can't encode character '
-  corfidi_storm_motion                                   0.10     0.23     2.2x ERR:setting an array element with 
-  friction_velocity                                      0.13     0.13     1.0x PASS                
-  tke                                                    0.10     0.20     2.0x PASS                
-  weighted_continuous_average                            0.22     0.00     0.0x PASS                
-  thickness_hydrostatic_from_relative_humidity           0.38     0.20     0.5x DIFF=1.843e+04      
-  compute_stp                                            0.11     0.42     3.8x PASS                
-  compute_scp                                            0.09     0.37     3.9x DIFF=4.5            
-  normal_component                                       0.00     0.00      N/A FAIL:normal_component() missing 2 required po
-  tangential_component                                   0.00     0.00      N/A FAIL:tangential_component() missing 2 require
-  kinematic_flux                                         0.00     0.00      N/A FAIL:Cannot convert from 'degree_Celsius' ([t
-  cross_section_components                               0.15     0.23     1.5x DIFF=1.607          
+  parcel_profile_with_lcl                                2.89     0.17     0.1x DIFF=975            
+  mixed_layer                                            0.08     0.10     1.1x DIFF=4.416          
+  get_mixed_layer_parcel                                 0.09     0.16     1.9x PASS                
+  get_most_unstable_parcel                               0.18     0.17     0.9x PASS                
+  mixed_parcel                                           0.09     0.16     1.8x PASS                
+  most_unstable_parcel                                   0.21     0.17     0.8x PASS                
+  get_layer                                              0.11     0.23     2.1x PASS                
+  get_layer_heights                                      0.05     0.25     5.0x DIFF=1000           
+  mean_pressure_weighted                                 0.10     0.00     0.0x PASS                
+  gradient_richardson_number                             0.12     0.17     1.5x PASS                
+  galvez_davison_index                                   0.12     0.10     0.9x DIFF=19.29          
+  corfidi_storm_motion                                   0.13     0.22     1.7x ERR:setting an array element with 
+  friction_velocity                                      0.10     0.13     1.3x PASS                
+  tke                                                    0.10     0.20     1.9x PASS                
+  weighted_continuous_average                            0.14     0.00     0.0x PASS                
+  thickness_hydrostatic_from_relative_humidity           0.23     0.12     0.5x PASS                
+  compute_stp                                            0.08     0.26     3.1x PASS                
+  compute_scp                                            0.12     0.22     1.8x PASS                
+  normal_component                                       0.08     0.04     0.4x PASS                
+  tangential_component                                   0.08     0.03     0.4x PASS                
+  kinematic_flux                                         0.07     0.06     0.9x PASS                
+  cross_section_components                               0.11     0.15     1.4x DIFF=1.607          
   get_perturbation                                       0.08     0.08     1.0x PASS                
-  relative_humidity_wet_psychrometric                    0.09     7.95    86.7x DIFF=1927           
-  psychrometric_vapor_pressure_wet                       0.08     6.70    86.4x PASS                
-  absolute_momentum                                      0.08     0.47     5.7x DIFF=1.972          
-  advection_3d                                           2.70     7.05     2.6x N/A                 
-  geospatial_gradient                                    0.50     1.29     2.6x N/A                 
-  geospatial_laplacian                                   0.79     1.21     1.5x N/A                 
-  compute_grid_scp                                       0.21     0.70     3.4x DIFF=4.5            
-  compute_grid_critical_angle                            0.21     0.61     2.9x DIFF=157.4          
-  unit_vectors_from_cross_section                        0.00     0.00      N/A FAIL:unit_vectors_from_cross_section() missin
-  isentropic_interpolation                               0.00     0.00      N/A FAIL:isentropic_interpolation() takes 4 posit
+  relative_humidity_wet_psychrometric                    0.10     7.09    69.5x DIFF=1927           
+  psychrometric_vapor_pressure_wet                       0.08     6.65    85.3x PASS                
+  absolute_momentum                                      0.09     0.52     5.7x DIFF=1.972          
+  advection_3d                                           2.41     7.36     3.1x N/A                 
+  geospatial_gradient                                    0.55     1.28     2.3x N/A                 
+  geospatial_laplacian                                   0.84     1.21     1.4x N/A                 
+  compute_grid_scp                                       0.17     0.79     4.7x PASS                
+  compute_grid_critical_angle                            0.25     0.72     2.9x DIFF=157.4          
+  unit_vectors_from_cross_section                        0.00     0.00     0.6x N/A                 
+  isentropic_interpolation                               0.62     7.83    12.6x N/A                 
   parse_angle                                              --       --       -- SKIP:CPU-only utility
   find_bounding_indices                                    --       --       -- SKIP:CPU-only utility
   find_intersections                                       --       --       -- SKIP:CPU-only utility

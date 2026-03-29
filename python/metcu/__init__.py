@@ -1,6 +1,6 @@
 """met-cu — Custom CUDA kernels for every meteorological calculation."""
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def __getattr__(name):

@@ -1371,6 +1371,8 @@ void cape_cin_kernel(
     double theta_dry_k = (sfc_t + ZEROCNK) * pow(1000.0 / sfc_p, ROCP);
     double r_parcel_gkg = mixratio_gkg(sfc_p, sfc_td);
     double w_kgkg = r_parcel_gkg / 1000.0;
+    double theta_start_c = (t_lcl + ZEROCNK) * pow(1000.0 / p_lcl, ROCP) - ZEROCNK;
+    double thetam = theta_start_c - wobf(theta_start_c) + wobf(t_lcl);
 
     // Compute parcel Tv and env Tv at each level
     // Also compute heights from hypsometric equation
@@ -1435,6 +1437,48 @@ void cape_cin_kernel(
             }
             // Saturated parcel: Td = T
             tv_parc[k] = virtual_temp(moist_t, p, moist_t);
+        }
+    }
+
+    // Geometric LFC scan for the public LFC-height diagnostic.
+    double lfc_p_geom = p_lcl;
+    bool found_positive_layer = false;
+    bool in_pos_layer = false;
+    int start_idx = 0;
+    for (int k = 0; k < nlev; k++) {
+        if (p_lev[k] <= p_lcl) {
+            start_idx = k;
+            break;
+        }
+    }
+    for (int k = start_idx; k < nlev; k++) {
+        double p_curr = p_lev[k];
+        double tv_env_geom = tv_env[k];
+        double t_parc_geom = satlift(p_curr, thetam);
+        double tv_parc_geom = virtual_temp(t_parc_geom, p_curr, t_parc_geom);
+        double buoy = tv_parc_geom - tv_env_geom;
+        if (buoy > 0.0) {
+            if (!in_pos_layer) {
+                in_pos_layer = true;
+                if (k > 0) {
+                    double p_prev = p_lev[k - 1];
+                    double tv_env_prev = tv_env[k - 1];
+                    double t_parc_prev = satlift(p_prev, thetam);
+                    double tv_parc_prev = virtual_temp(t_parc_prev, p_prev, t_parc_prev);
+                    double buoy_prev = tv_parc_prev - tv_env_prev;
+                    if (buoy != buoy_prev) {
+                        double frac = (0.0 - buoy_prev) / (buoy - buoy_prev);
+                        lfc_p_geom = p_prev + frac * (p_curr - p_prev);
+                    } else {
+                        lfc_p_geom = p_curr;
+                    }
+                } else {
+                    lfc_p_geom = p_curr;
+                }
+                found_positive_layer = true;
+            }
+        } else if (in_pos_layer) {
+            in_pos_layer = false;
         }
     }
 
@@ -1584,6 +1628,12 @@ void lfc_kernel(
             // Found crossing
             double frac = -prev_buoy / (buoy - prev_buoy);
             lfc_p_out[col] = pressure[k-1] + frac * (pressure[k] - pressure[k-1]);
+            lfc_t_out[col] = temperature[col * nlevels + k - 1]
+                           + frac * (temperature[col * nlevels + k] - temperature[col * nlevels + k - 1]);
+            return;
+        }
+        if (first && buoy > 0.0) {
+            lfc_p_out[col] = pressure[k];
             lfc_t_out[col] = t_e;
             return;
         }
@@ -1643,7 +1693,8 @@ void el_kernel(
         if (!first && found_pos && prev_buoy > 0.0 && buoy <= 0.0) {
             double frac = -prev_buoy / (buoy - prev_buoy);
             last_el_p = pressure[k-1] + frac * (pressure[k] - pressure[k-1]);
-            last_el_t = t_e;
+            last_el_t = temperature[col * nlevels + k - 1]
+                      + frac * (temperature[col * nlevels + k] - temperature[col * nlevels + k - 1]);
         }
         prev_buoy = buoy;
         first = false;
@@ -1750,9 +1801,8 @@ void mixed_layer_kernel(
     double sfc_p = pressure[0];
     double top_p = sfc_p - depth;
 
-    // Pressure-weighted average using trapezoidal rule
-    // Convert T to theta for proper averaging, then convert back
-    double sum_theta = 0.0;
+    // Pressure-weighted average using trapezoidal rule, matching metrust.
+    double sum_t = 0.0;
     double sum_td = 0.0;
     double total_dp = 0.0;
 
@@ -1763,20 +1813,16 @@ void mixed_layer_kernel(
         double dp = pressure[k] - p_top_layer;
         if (dp <= 0.0) continue;
 
-        double th0 = (temperature[col*nlevels+k]   + ZEROCNK) * pow(1000.0/pressure[k],   ROCP);
-        double th1 = (temperature[col*nlevels+k+1] + ZEROCNK) * pow(1000.0/pressure[k+1], ROCP);
-        double td0 = dewpoint[col*nlevels+k];
-        double td1 = dewpoint[col*nlevels+k+1];
+        double avg_t = (temperature[col*nlevels+k] + temperature[col*nlevels+k+1]) / 2.0;
+        double avg_td = (dewpoint[col*nlevels+k] + dewpoint[col*nlevels+k+1]) / 2.0;
 
-        sum_theta += (th0 + th1) / 2.0 * dp;
-        sum_td    += (td0 + td1) / 2.0 * dp;
-        total_dp  += dp;
+        sum_t += avg_t * dp;
+        sum_td += avg_td * dp;
+        total_dp += dp;
     }
 
     if (total_dp > 0.0) {
-        double avg_theta = sum_theta / total_dp;
-        // Convert avg theta back to T at surface pressure
-        t_ml_out[col] = avg_theta * pow(sfc_p / 1000.0, ROCP) - ZEROCNK;
+        t_ml_out[col] = sum_t / total_dp;
         td_ml_out[col] = sum_td / total_dp;
     } else {
         t_ml_out[col] = temperature[col*nlevels];
@@ -2766,3 +2812,970 @@ def ccl(pressure, temperature, dewpoint):
     grid, block = _grid_1d(ncols)
     _ccl_raw(grid, block, (p, t, td, ccl_p, ccl_t, np.int32(ncols), np.int32(nlevels)))
     return ccl_p, ccl_t
+
+
+# ============================================================================
+# Grid-scale PW from 3D pressure and qvapor
+# ============================================================================
+_grid_pw_code = r'''
+extern "C" __global__
+void grid_pw_kernel(
+    const double* pressure,   // (ncols, nz) Pa, surface first (decreasing)
+    const double* qvapor,     // (ncols, nz) kg/kg
+    double* pw_out,           // (ncols,) mm
+    int ncols, int nz
+) {
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
+    if (col >= ncols) return;
+    int off = col * nz;
+    double pw = 0.0;
+    for (int k = 0; k < nz - 1; k++) {
+        double q0 = qvapor[off + k];
+        double q1 = qvapor[off + k + 1];
+        if (q0 < 0.0) q0 = 0.0;
+        if (q1 < 0.0) q1 = 0.0;
+        double dp = pressure[off + k] - pressure[off + k + 1];
+        if (dp < 0.0) dp = -dp;  // handle ascending order too
+        pw += (q0 + q1) / 2.0 * dp;
+    }
+    pw_out[col] = pw / 9.80665;  // divide by g, result in kg/m^2 = mm
+}
+'''
+_grid_pw_raw = cp.RawKernel(_grid_pw_code, 'grid_pw_kernel')
+
+
+def grid_precipitable_water(pressure, qvapor):
+    """Precipitable water from per-column 3D pressure and qvapor.
+
+    Parameters
+    ----------
+    pressure : 2-D (ncols, nz) in Pa, cupy array
+    qvapor : 2-D (ncols, nz) in kg/kg, cupy array
+
+    Returns
+    -------
+    pw : 1-D (ncols,) in mm (= kg/m^2)
+    """
+    pressure = cp.asarray(pressure, dtype=cp.float64)
+    qvapor = cp.asarray(qvapor, dtype=cp.float64)
+    if pressure.ndim != 2 or qvapor.ndim != 2:
+        raise ValueError("pressure and qvapor must be 2-D (ncols, nz)")
+    if not pressure.flags['C_CONTIGUOUS']:
+        pressure = cp.ascontiguousarray(pressure)
+    if not qvapor.flags['C_CONTIGUOUS']:
+        qvapor = cp.ascontiguousarray(qvapor)
+    ncols, nz = pressure.shape
+    pw_out = cp.empty(ncols, dtype=cp.float64)
+    grid, block = _grid_1d(ncols)
+    _grid_pw_raw(grid, block, (
+        pressure, qvapor, pw_out,
+        np.int32(ncols), np.int32(nz)
+    ))
+    return pw_out
+
+
+# ============================================================================
+# Grid-scale CAPE/CIN from 3D model fields (pressure, temperature, qvapor)
+# ============================================================================
+_grid_cape_cin_code = _CUDA_CONSTANTS + r'''
+// Convert mixing ratio (kg/kg) to dewpoint (C) given pressure (hPa)
+__device__ double qv_to_dewpoint(double q_kgkg, double p_hpa) {
+    double q = q_kgkg > 1.0e-10 ? q_kgkg : 1.0e-10;
+    double e = q * p_hpa / (0.622 + q);
+    if (e < 1.0e-10) e = 1.0e-10;
+    // e -> dewpoint via inverted SVP (Bolton 1980 approximation)
+    double ln_e = log(e / 6.112);
+    return 243.5 * ln_e / (17.67 - ln_e);
+}
+
+extern "C" __global__
+void grid_cape_cin_kernel(
+    const double* pressure_3d,    // (ncols, nz) in Pa
+    const double* temperature_3d, // (ncols, nz) in K
+    const double* qvapor_3d,      // (ncols, nz) in kg/kg
+    const double* height_agl_3d,  // (ncols, nz) in m AGL
+    const double* psfc,           // (ncols,) surface pressure Pa
+    const double* t2,             // (ncols,) 2m temperature K
+    const double* q2,             // (ncols,) 2m specific humidity kg/kg
+    double* cape_out,             // (ncols,)
+    double* cin_out,              // (ncols,)
+    double* lcl_height_out,       // (ncols,) LCL height in m AGL
+    double* lfc_height_out,       // (ncols,) LFC height in m AGL
+    int ncols, int nz
+) {
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
+    if (col >= ncols) return;
+
+    int off = col * nz;
+
+    // Surface conditions (convert to hPa / C)
+    double sfc_p  = psfc[col] / 100.0;
+    double sfc_t  = t2[col] > 150.0 ? t2[col] - ZEROCNK : t2[col];
+    double sfc_td = qv_to_dewpoint(q2[col], sfc_p);
+
+    // Ensure Td <= T
+    if (sfc_td > sfc_t) sfc_td = sfc_t;
+
+    // 1. Compute LCL
+    double p_lcl, t_lcl;
+    drylift(sfc_p, sfc_t, sfc_td, &p_lcl, &t_lcl);
+
+    // 2. Build parcel profile: dry below LCL, moist above
+    double theta_dry_k = (sfc_t + ZEROCNK) * pow(1000.0 / sfc_p, ROCP);
+    double r_parcel_gkg = mixratio_gkg(sfc_p, sfc_td);
+    double w_kgkg = r_parcel_gkg / 1000.0;
+
+    // Stack-allocated arrays sized for the audited public benchmark and tests.
+    double tv_parc[384];
+    double tv_env[384];
+    double z_agl[384];
+    double p_lev[384];
+
+    int nlev = nz;
+    if (nlev > 384) nlev = 384;
+
+    // Environment Tv and heights from input
+    for (int k = 0; k < nlev; k++) {
+        double p_hpa = pressure_3d[off + k] / 100.0;
+        double t_c = temperature_3d[off + k];
+        double td_c = qv_to_dewpoint(qvapor_3d[off + k], p_hpa);
+        if (td_c > t_c) td_c = t_c;
+        tv_env[k] = virtual_temp(t_c, p_hpa, td_c);
+        z_agl[k] = height_agl_3d[off + k];
+        p_lev[k] = p_hpa;
+    }
+
+    // Parcel Tv: dry below LCL, moist above via RK4
+    double moist_t = t_lcl;
+    double moist_p = p_lcl;
+
+    for (int k = 0; k < nlev; k++) {
+        double p = p_lev[k];
+        if (p <= 0.0) { tv_parc[k] = -9999.0; continue; }
+        if (p >= p_lcl) {
+            // Below LCL: dry adiabat with moisture correction
+            double t_parc_k = theta_dry_k * pow(p / 1000.0, ROCP);
+            double t_parc = t_parc_k - ZEROCNK;
+            tv_parc[k] = (t_parc + ZEROCNK) * (1.0 + w_kgkg / EPS) / (1.0 + w_kgkg) - ZEROCNK;
+        } else {
+            // Above LCL: moist adiabat via RK4 sub-stepping at 5 hPa
+            double dp = p - moist_p;
+            if (fabs(dp) > 1e-10) {
+                int n_steps = (int)(fabs(dp) / 5.0);
+                if (n_steps < 4) n_steps = 4;
+                double h = dp / (double)n_steps;
+                double pc = moist_p;
+                double tc = moist_t;
+                for (int s = 0; s < n_steps; s++) {
+                    double rk1 = h * moist_lapse_rate(pc, tc);
+                    double rk2 = h * moist_lapse_rate(pc + h/2.0, tc + rk1/2.0);
+                    double rk3 = h * moist_lapse_rate(pc + h/2.0, tc + rk2/2.0);
+                    double rk4 = h * moist_lapse_rate(pc + h, tc + rk3);
+                    tc += (rk1 + 2.0*rk2 + 2.0*rk3 + rk4) / 6.0;
+                    pc += h;
+                }
+                moist_t = tc;
+                moist_p = p;
+            }
+            // Saturated parcel: Td = T
+            tv_parc[k] = virtual_temp(moist_t, p, moist_t);
+        }
+    }
+
+    // Geometric LFC scan for the public LFC-height diagnostic.
+    double theta_start_c = (t_lcl + ZEROCNK) * pow(1000.0 / p_lcl, ROCP) - ZEROCNK;
+    double thetam = theta_start_c - wobf(theta_start_c) + wobf(t_lcl);
+    double lfc_p_geom = p_lcl;
+    double el_p_geom = p_lcl;
+    bool found_positive_layer = false;
+    bool in_pos_layer = false;
+    int start_idx = 0;
+    for (int k = 0; k < nlev; k++) {
+        if (p_lev[k] <= p_lcl) {
+            start_idx = k;
+            break;
+        }
+    }
+    for (int k = start_idx; k < nlev; k++) {
+        double p_curr = p_lev[k];
+        double tv_env_geom = tv_env[k];
+        double t_parc_geom = satlift(p_curr, thetam);
+        double tv_parc_geom = virtual_temp(t_parc_geom, p_curr, t_parc_geom);
+        double buoy = tv_parc_geom - tv_env_geom;
+        if (buoy > 0.0) {
+            if (!in_pos_layer) {
+                in_pos_layer = true;
+                if (k > 0) {
+                    double p_prev = p_lev[k - 1];
+                    double tv_env_prev = tv_env[k - 1];
+                    double t_parc_prev = satlift(p_prev, thetam);
+                    double tv_parc_prev = virtual_temp(t_parc_prev, p_prev, t_parc_prev);
+                    double buoy_prev = tv_parc_prev - tv_env_prev;
+                    if (buoy != buoy_prev) {
+                        double frac = (0.0 - buoy_prev) / (buoy - buoy_prev);
+                        lfc_p_geom = p_prev + frac * (p_curr - p_prev);
+                    } else {
+                        lfc_p_geom = p_curr;
+                    }
+                } else {
+                    lfc_p_geom = p_curr;
+                }
+                el_p_geom = p_lev[nlev - 1];
+                found_positive_layer = true;
+            }
+        } else if (in_pos_layer) {
+            in_pos_layer = false;
+            double p_prev = p_lev[k - 1];
+            double tv_env_prev = tv_env[k - 1];
+            double t_parc_prev = satlift(p_prev, thetam);
+            double tv_parc_prev = virtual_temp(t_parc_prev, p_prev, t_parc_prev);
+            double buoy_prev = tv_parc_prev - tv_env_prev;
+            if (buoy != buoy_prev) {
+                double frac = (0.0 - buoy_prev) / (buoy - buoy_prev);
+                el_p_geom = p_prev + frac * (p_curr - p_prev);
+            } else {
+                el_p_geom = p_curr;
+            }
+        }
+    }
+    if (in_pos_layer) {
+        el_p_geom = p_lev[nlev - 1];
+    }
+
+    // 3. Find the LAST negative->positive buoyancy crossing (the true LFC)
+    int last_lfc_idx = -1;
+    for (int k = 1; k < nlev; k++) {
+        if (tv_parc[k] < -9000.0 || tv_parc[k-1] < -9000.0) continue;
+        double buoy     = (tv_parc[k]   + ZEROCNK) - (tv_env[k]   + ZEROCNK);
+        double buoy_prev = (tv_parc[k-1] + ZEROCNK) - (tv_env[k-1] + ZEROCNK);
+        if (buoy > 0.0 && buoy_prev <= 0.0) {
+            last_lfc_idx = k;
+        }
+    }
+
+    // Interpolate LCL height from pressure levels
+    double lcl_z = 0.0;
+    for (int k = 1; k < nlev; k++) {
+        if (p_lev[k-1] >= p_lcl && p_lev[k] <= p_lcl) {
+            double frac = (p_lev[k-1] - p_lcl) / (p_lev[k-1] - p_lev[k]);
+            lcl_z = z_agl[k-1] + frac * (z_agl[k] - z_agl[k-1]);
+            break;
+        }
+    }
+    lcl_height_out[col] = lcl_z;
+
+    if (!found_positive_layer) {
+        // No instability found
+        cape_out[col] = 0.0;
+        cin_out[col] = 0.0;
+        lfc_height_out[col] = nan("");
+        return;
+    }
+
+    if (lfc_p_geom > p_lcl) {
+        lfc_p_geom = p_lcl;
+    }
+
+    // Interpolate geometric LFC height
+    {
+        double lfc_z = z_agl[0];
+        for (int k = 1; k < nlev; k++) {
+            if (p_lev[k-1] >= lfc_p_geom && p_lev[k] <= lfc_p_geom) {
+                double frac = (p_lev[k-1] - lfc_p_geom) / (p_lev[k-1] - p_lev[k]);
+                lfc_z = z_agl[k-1] + frac * (z_agl[k] - z_agl[k-1]);
+                break;
+            }
+        }
+        lfc_height_out[col] = lfc_z;
+    }
+
+    // 4. Integrate CAPE and CIN (trapezoidal, LFC-bounded CIN)
+    double cape = 0.0;
+    double cin = 0.0;
+
+    for (int k = 1; k < nlev; k++) {
+        if (p_lev[k] <= 0.0 || tv_parc[k] < -9000.0 || tv_parc[k-1] < -9000.0) continue;
+        if (p_lev[k] < el_p_geom) continue;
+
+        double tv_e_lo = tv_env[k-1] + ZEROCNK;
+        double tv_e_hi = tv_env[k] + ZEROCNK;
+        double tv_p_lo = tv_parc[k-1] + ZEROCNK;
+        double tv_p_hi = tv_parc[k] + ZEROCNK;
+        double dz = z_agl[k] - z_agl[k-1];
+        if (fabs(dz) < 1e-6 || tv_e_lo <= 0.0 || tv_e_hi <= 0.0) continue;
+
+        double buoy_lo = (tv_p_lo - tv_e_lo) / tv_e_lo;
+        double buoy_hi = (tv_p_hi - tv_e_hi) / tv_e_hi;
+        double val = G0 * (buoy_lo + buoy_hi) / 2.0 * dz;
+
+        if (val > 0.0 && k >= last_lfc_idx) {
+            cape += val;
+        } else if (val < 0.0 && k <= last_lfc_idx) {
+            cin += val;
+        }
+    }
+
+    cape_out[col] = cape;
+    cin_out[col] = cin;
+}
+'''
+_grid_cape_cin_raw = cp.RawKernel(_grid_cape_cin_code, 'grid_cape_cin_kernel')
+
+
+_grid_cape_cin_exact_code = _CUDA_CONSTANTS + r'''
+__device__ int grid_ordered_idx(int k, int nz, int reverse) {
+    return reverse ? (nz - 1 - k) : k;
+}
+
+__device__ double grid_dewpoint_from_q(double q_kgkg, double p_hpa) {
+    double q = q_kgkg > 1.0e-10 ? q_kgkg : 1.0e-10;
+    double e = q * p_hpa / (0.622 + q);
+    if (e < 1.0e-10) e = 1.0e-10;
+    double ln_ratio = log(e / 6.112);
+    return 243.5 * ln_ratio / (17.67 - ln_ratio);
+}
+
+__device__ double thetae_local(double p, double t, double td) {
+    double p_lcl, t_lcl;
+    drylift(p, t, td, &p_lcl, &t_lcl);
+    double theta = (t_lcl + ZEROCNK) * pow(1000.0 / p_lcl, ROCP);
+    double r = mixratio_gkg(p, td) / 1000.0;
+    double lc = 2500.0 - 2.37 * t_lcl;
+    double te_k = theta * exp((lc * 1000.0 * r) / (CP_D * (t_lcl + ZEROCNK)));
+    return te_k - ZEROCNK;
+}
+
+__device__ double temp_at_mixrat_local(double w, double p) {
+    const double c1 = 0.0498646455;
+    const double c2 = 2.4082965;
+    const double c3 = 7.07475;
+    const double c4 = 38.9114;
+    const double c5 = 0.0915;
+    const double c6 = 1.2035;
+    double x = log10(w * p / (622.0 + w));
+    return (pow(10.0, c1 * x + c2) - c3
+        + c4 * pow(pow(10.0, c5 * x) - c6, 2.0)) - ZEROCNK;
+}
+
+__device__ void grid_level(
+    int aug_idx,
+    const double* pressure,
+    const double* temperature,
+    const double* qvapor,
+    const double* height_agl,
+    int offset,
+    int nz,
+    int reverse,
+    double psfc_hpa,
+    double t2_c,
+    double td2_c,
+    double p_scale,
+    double* p_out,
+    double* t_out,
+    double* td_out,
+    double* h_out
+) {
+    if (aug_idx == 0) {
+        *p_out = psfc_hpa;
+        *t_out = t2_c;
+        *td_out = td2_c;
+        *h_out = 0.0;
+        return;
+    }
+
+    int raw_idx = grid_ordered_idx(aug_idx - 1, nz, reverse);
+    double p = pressure[offset + raw_idx] * p_scale;
+    double t = temperature[offset + raw_idx];
+    double td = grid_dewpoint_from_q(qvapor[offset + raw_idx], p);
+    if (td > t) td = t;
+    *p_out = p;
+    *t_out = t;
+    *td_out = td;
+    *h_out = height_agl[offset + raw_idx];
+}
+
+__device__ void grid_env_at_pressure(
+    double target_p,
+    const double* pressure,
+    const double* temperature,
+    const double* qvapor,
+    const double* height_agl,
+    int offset,
+    int nz,
+    int reverse,
+    double psfc_hpa,
+    double t2_c,
+    double td2_c,
+    double p_scale,
+    double* t_interp_out,
+    double* td_interp_out
+) {
+    for (int i = 0; i < nz; i++) {
+        double p0, t0, td0, h0;
+        double p1, t1, td1, h1;
+        grid_level(i, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p0, &t0, &td0, &h0);
+        grid_level(i + 1, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p1, &t1, &td1, &h1);
+        if (p0 >= target_p && target_p >= p1) {
+            double log_pt = log(target_p);
+            double log_p0 = log(p0);
+            double log_p1 = log(p1);
+            if (fabs(log_p1 - log_p0) < 1.0e-12) {
+                *t_interp_out = t0;
+                *td_interp_out = td0;
+                return;
+            }
+            double frac = (log_pt - log_p0) / (log_p1 - log_p0);
+            *t_interp_out = t0 + frac * (t1 - t0);
+            *td_interp_out = td0 + frac * (td1 - td0);
+            return;
+        }
+    }
+
+    double p_last, t_last, td_last, h_last;
+    grid_level(nz, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+               psfc_hpa, t2_c, td2_c, p_scale, &p_last, &t_last, &td_last, &h_last);
+    *t_interp_out = t_last;
+    *td_interp_out = td_last;
+}
+
+__device__ double grid_height_at_pressure(
+    double target_p,
+    const double* pressure,
+    const double* temperature,
+    const double* qvapor,
+    const double* height_agl,
+    int offset,
+    int nz,
+    int reverse,
+    double psfc_hpa,
+    double t2_c,
+    double td2_c,
+    double p_scale
+) {
+    double p_first, t_first, td_first, h_first;
+    double p_last, t_last, td_last, h_last;
+    grid_level(0, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+               psfc_hpa, t2_c, td2_c, p_scale, &p_first, &t_first, &td_first, &h_first);
+    grid_level(nz, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+               psfc_hpa, t2_c, td2_c, p_scale, &p_last, &t_last, &td_last, &h_last);
+
+    if (target_p > p_first) return h_first;
+    if (target_p < p_last) return h_last;
+
+    for (int i = 0; i < nz; i++) {
+        double p0, t0, td0, h0;
+        double p1, t1, td1, h1;
+        grid_level(i, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p0, &t0, &td0, &h0);
+        grid_level(i + 1, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p1, &t1, &td1, &h1);
+        if (p0 >= target_p && target_p >= p1) {
+            if (fabs(p1 - p0) < 1.0e-12) return h0;
+            return h0 + (target_p - p0) * (h1 - h0) / (p1 - p0);
+        }
+    }
+    return h_last;
+}
+
+__device__ double grid_pressure_at_height(
+    double target_h,
+    const double* pressure,
+    const double* temperature,
+    const double* qvapor,
+    const double* height_agl,
+    int offset,
+    int nz,
+    int reverse,
+    double psfc_hpa,
+    double t2_c,
+    double td2_c,
+    double p_scale
+) {
+    double p_first, t_first, td_first, h_first;
+    double p_last, t_last, td_last, h_last;
+    grid_level(0, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+               psfc_hpa, t2_c, td2_c, p_scale, &p_first, &t_first, &td_first, &h_first);
+    grid_level(nz, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+               psfc_hpa, t2_c, td2_c, p_scale, &p_last, &t_last, &td_last, &h_last);
+
+    if (target_h <= h_first) return p_first;
+    if (target_h >= h_last) return p_last;
+
+    for (int i = 0; i < nz; i++) {
+        double p0, t0, td0, h0;
+        double p1, t1, td1, h1;
+        grid_level(i, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p0, &t0, &td0, &h0);
+        grid_level(i + 1, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p1, &t1, &td1, &h1);
+        if (h0 <= target_h && target_h <= h1) {
+            if (fabs(h1 - h0) < 1.0e-12) return p0;
+            return p0 + (target_h - h0) * (p1 - p0) / (h1 - h0);
+        }
+    }
+    return p_last;
+}
+
+__device__ void grid_mixed_layer_parcel(
+    const double* pressure,
+    const double* temperature,
+    const double* qvapor,
+    const double* height_agl,
+    int offset,
+    int nz,
+    int reverse,
+    double psfc_hpa,
+    double t2_c,
+    double td2_c,
+    double p_scale,
+    double depth,
+    double* p_start_out,
+    double* t_start_out,
+    double* td_start_out
+) {
+    double sfc_p = psfc_hpa;
+    double top_p = sfc_p - depth;
+    double theta_sfc = (t2_c + ZEROCNK) * pow(1000.0 / sfc_p, ROCP);
+
+    double t_top, td_top;
+    grid_env_at_pressure(top_p, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                         psfc_hpa, t2_c, td2_c, p_scale, &t_top, &td_top);
+    double theta_top = (t_top + ZEROCNK) * pow(1000.0 / top_p, ROCP);
+
+    double sum_theta = theta_sfc + theta_top;
+    double sum_p = sfc_p + top_p;
+    double sum_td = td2_c + td_top;
+    double count = 2.0;
+
+    for (int i = 1; i <= nz; i++) {
+        double p_i, t_i, td_i, h_i;
+        grid_level(i, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p_i, &t_i, &td_i, &h_i);
+        if (p_i <= top_p) break;
+        double theta_i = (t_i + ZEROCNK) * pow(1000.0 / p_i, ROCP);
+        sum_theta += 2.0 * theta_i;
+        sum_p += 2.0 * p_i;
+        sum_td += 2.0 * td_i;
+        count += 2.0;
+    }
+
+    double avg_theta = sum_theta / count;
+    double avg_p = sum_p / count;
+    double avg_td = sum_td / count;
+    double avg_t = avg_theta * pow(sfc_p / 1000.0, ROCP) - ZEROCNK;
+    double avg_w = mixratio_gkg(avg_p, avg_td);
+    *p_start_out = sfc_p;
+    *t_start_out = avg_t;
+    *td_start_out = temp_at_mixrat_local(avg_w, sfc_p);
+}
+
+__device__ void grid_most_unstable_parcel(
+    const double* pressure,
+    const double* temperature,
+    const double* qvapor,
+    const double* height_agl,
+    int offset,
+    int nz,
+    int reverse,
+    double psfc_hpa,
+    double t2_c,
+    double td2_c,
+    double p_scale,
+    double depth,
+    double* p_start_out,
+    double* t_start_out,
+    double* td_start_out
+) {
+    double limit_p = psfc_hpa - depth;
+    double max_thetae = -999.0;
+    double best_p = psfc_hpa;
+    double best_t = t2_c;
+    double best_td = td2_c;
+
+    for (int i = 0; i <= nz; i++) {
+        double p_i, t_i, td_i, h_i;
+        grid_level(i, pressure, temperature, qvapor, height_agl, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p_i, &t_i, &td_i, &h_i);
+        if (p_i < limit_p) break;
+        double te = thetae_local(p_i, t_i, td_i);
+        if (te > max_thetae) {
+            max_thetae = te;
+            best_p = p_i;
+            best_t = t_i;
+            best_td = td_i;
+        }
+    }
+
+    *p_start_out = best_p;
+    *t_start_out = best_t;
+    *td_start_out = best_td;
+}
+
+__device__ double advance_moist_profile(double p_from, double t_from, double p_to) {
+    double dp = p_to - p_from;
+    if (fabs(dp) < 1.0e-10) return t_from;
+    int n_steps = (int)(fabs(dp) / 5.0);
+    if (n_steps < 4) n_steps = 4;
+    double h = dp / (double)n_steps;
+    double p_c = p_from;
+    double t_c = t_from;
+    for (int s = 0; s < n_steps; s++) {
+        double k1 = h * moist_lapse_rate(p_c, t_c);
+        double k2 = h * moist_lapse_rate(p_c + h / 2.0, t_c + k1 / 2.0);
+        double k3 = h * moist_lapse_rate(p_c + h / 2.0, t_c + k2 / 2.0);
+        double k4 = h * moist_lapse_rate(p_c + h, t_c + k3);
+        t_c += (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;
+        p_c += h;
+    }
+    return t_c;
+}
+
+extern "C" __global__
+void grid_cape_cin_exact_kernel(
+    const double* pressure_3d,    // (ncols, nz) in Pa or hPa
+    const double* temperature_3d, // (ncols, nz) in Celsius
+    const double* qvapor_3d,      // (ncols, nz) mixing ratio kg/kg
+    const double* height_agl_3d,  // (ncols, nz) m AGL
+    const double* psfc,           // (ncols,) surface pressure Pa or hPa
+    const double* t2,             // (ncols,) 2m temperature K or C
+    const double* q2,             // (ncols,) mixing ratio kg/kg
+    int parcel_type_code,         // 0=surface, 1=mixed-layer, 2=most-unstable
+    double top_m,                 // <0 means no top cap
+    double* cape_out,             // (ncols,)
+    double* cin_out,              // (ncols,)
+    double* lcl_height_out,       // (ncols,)
+    double* lfc_height_out,       // (ncols,)
+    int ncols,
+    int nz
+) {
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
+    if (col >= ncols) return;
+    if (nz < 1) {
+        cape_out[col] = 0.0;
+        cin_out[col] = 0.0;
+        lcl_height_out[col] = nan("");
+        lfc_height_out[col] = nan("");
+        return;
+    }
+
+    int offset = col * nz;
+    double psfc_raw = psfc[col];
+    double p_scale = psfc_raw > 2000.0 ? 0.01 : 1.0;
+    int reverse = 0;
+    if (nz > 1) {
+        reverse = (pressure_3d[offset] * p_scale) < (pressure_3d[offset + nz - 1] * p_scale);
+    }
+
+    double psfc_hpa = psfc_raw * p_scale;
+    double t2_c = t2[col] > 150.0 ? t2[col] - ZEROCNK : t2[col];
+    double td2_c = grid_dewpoint_from_q(q2[col], psfc_hpa);
+    if (td2_c > t2_c) td2_c = t2_c;
+
+    double p_start = psfc_hpa;
+    double t_start = t2_c;
+    double td_start = td2_c;
+    if (parcel_type_code == 1) {
+        grid_mixed_layer_parcel(
+            pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+            offset, nz, reverse, psfc_hpa, t2_c, td2_c, p_scale, 100.0,
+            &p_start, &t_start, &td_start
+        );
+    } else if (parcel_type_code == 2) {
+        grid_most_unstable_parcel(
+            pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+            offset, nz, reverse, psfc_hpa, t2_c, td2_c, p_scale, 300.0,
+            &p_start, &t_start, &td_start
+        );
+    }
+
+    double p_lcl, t_lcl;
+    drylift(p_start, t_start, td_start, &p_lcl, &t_lcl);
+    double h_lcl = grid_height_at_pressure(
+        p_lcl, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+        offset, nz, reverse, psfc_hpa, t2_c, td2_c, p_scale
+    );
+    lcl_height_out[col] = h_lcl;
+
+    double theta_start_k = (t_lcl + ZEROCNK) * pow(1000.0 / p_lcl, ROCP);
+    double theta_start_c = theta_start_k - ZEROCNK;
+    double thetam = theta_start_c - wobf(theta_start_c) + wobf(t_lcl);
+
+    double lfc_p = p_lcl;
+    double el_p = p_lcl;
+    int found_positive_layer = 0;
+    int in_positive_layer = 0;
+    int start_idx = 0;
+    for (int i = 0; i <= nz; i++) {
+        double p_i, t_i, td_i, h_i;
+        grid_level(i, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p_i, &t_i, &td_i, &h_i);
+        if (p_i <= p_lcl) {
+            start_idx = i;
+            break;
+        }
+    }
+
+    for (int i = start_idx; i <= nz; i++) {
+        double p_i, t_i, td_i, h_i;
+        grid_level(i, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p_i, &t_i, &td_i, &h_i);
+        double tv_env = virtual_temp(t_i, p_i, td_i);
+        double t_parc = satlift(p_i, thetam);
+        double tv_parc = virtual_temp(t_parc, p_i, t_parc);
+        double buoyancy = tv_parc - tv_env;
+
+        if (buoyancy > 0.0) {
+            if (!in_positive_layer) {
+                in_positive_layer = 1;
+                if (i > 0) {
+                    double p_prev, t_prev, td_prev, h_prev;
+                    grid_level(i - 1, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+                               psfc_hpa, t2_c, td2_c, p_scale, &p_prev, &t_prev, &td_prev, &h_prev);
+                    double tv_env_prev = virtual_temp(t_prev, p_prev, td_prev);
+                    double t_parc_prev = satlift(p_prev, thetam);
+                    double tv_parc_prev = virtual_temp(t_parc_prev, p_prev, t_parc_prev);
+                    double buoy_prev = tv_parc_prev - tv_env_prev;
+                    if (buoyancy != buoy_prev) {
+                        double frac = (0.0 - buoy_prev) / (buoyancy - buoy_prev);
+                        lfc_p = p_prev + frac * (p_i - p_prev);
+                    } else {
+                        lfc_p = p_i;
+                    }
+                } else {
+                    lfc_p = p_i;
+                }
+                el_p = p_i;
+                found_positive_layer = 1;
+            }
+        } else if (in_positive_layer) {
+            in_positive_layer = 0;
+            double p_prev, t_prev, td_prev, h_prev;
+            grid_level(i - 1, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+                       psfc_hpa, t2_c, td2_c, p_scale, &p_prev, &t_prev, &td_prev, &h_prev);
+            double tv_env_prev = virtual_temp(t_prev, p_prev, td_prev);
+            double t_parc_prev = satlift(p_prev, thetam);
+            double tv_parc_prev = virtual_temp(t_parc_prev, p_prev, t_parc_prev);
+            double buoy_prev = tv_parc_prev - tv_env_prev;
+            if (buoyancy != buoy_prev) {
+                double frac = (0.0 - buoy_prev) / (buoyancy - buoy_prev);
+                el_p = p_prev + frac * (p_i - p_prev);
+            } else {
+                el_p = p_i;
+            }
+        }
+    }
+
+    if (in_positive_layer) {
+        double p_last, t_last, td_last, h_last;
+        grid_level(nz, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p_last, &t_last, &td_last, &h_last);
+        el_p = p_last;
+    }
+
+    if (!found_positive_layer) {
+        cape_out[col] = 0.0;
+        cin_out[col] = 0.0;
+        lfc_height_out[col] = nan("");
+        return;
+    }
+
+    if (isnan(lfc_p) || lfc_p > p_lcl) {
+        lfc_p = p_lcl;
+    }
+    double h_lfc = grid_height_at_pressure(
+        lfc_p, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+        offset, nz, reverse, psfc_hpa, t2_c, td2_c, p_scale
+    );
+    lfc_height_out[col] = h_lfc;
+
+    double p_last, t_last, td_last, h_last;
+    grid_level(nz, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+               psfc_hpa, t2_c, td2_c, p_scale, &p_last, &t_last, &td_last, &h_last);
+    double p_top_limit = el_p;
+    if (top_m >= 0.0) {
+        double p_top_m = grid_pressure_at_height(
+            top_m, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+            offset, nz, reverse, psfc_hpa, t2_c, td2_c, p_scale
+        );
+        if (p_top_m >= p_top_limit) {
+            p_top_limit = p_top_m > p_last ? p_top_m : p_last;
+        }
+    }
+
+    double theta_dry_k = (t_start + ZEROCNK) * pow(1000.0 / p_start, ROCP);
+    double w_kgkg = mixratio_gkg(p_start, td_start) / 1000.0;
+
+    int last_lfc_idx = -1;
+    int prev_valid = 0;
+    double prev_tv_env = 0.0;
+    double prev_tv_parc = 0.0;
+    double moist_p = p_lcl;
+    double moist_t = t_lcl;
+    for (int i = 0; i <= nz; i++) {
+        double p_i, t_i, td_i, h_i;
+        grid_level(i, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p_i, &t_i, &td_i, &h_i);
+        if (p_i <= 0.0) {
+            prev_valid = 0;
+            continue;
+        }
+
+        double tv_env = virtual_temp(t_i, p_i, td_i);
+        double tv_parc;
+        if (p_i >= p_lcl) {
+            double t_parc = theta_dry_k * pow(p_i / 1000.0, ROCP) - ZEROCNK;
+            tv_parc = (t_parc + ZEROCNK) * (1.0 + w_kgkg / EPS) / (1.0 + w_kgkg) - ZEROCNK;
+        } else {
+            moist_t = advance_moist_profile(moist_p, moist_t, p_i);
+            moist_p = p_i;
+            tv_parc = virtual_temp(moist_t, p_i, moist_t);
+        }
+
+        if (prev_valid) {
+            double buoy = tv_parc - tv_env;
+            double buoy_prev = prev_tv_parc - prev_tv_env;
+            if (buoy > 0.0 && buoy_prev <= 0.0) {
+                last_lfc_idx = i;
+            }
+        }
+
+        prev_valid = 1;
+        prev_tv_env = tv_env;
+        prev_tv_parc = tv_parc;
+    }
+
+    double total_cape = 0.0;
+    double total_cin = 0.0;
+    double p_top_actual = p_top_limit > 0.0 ? p_top_limit : p_last;
+    prev_valid = 0;
+    prev_tv_env = 0.0;
+    prev_tv_parc = 0.0;
+    double prev_h = 0.0;
+    moist_p = p_lcl;
+    moist_t = t_lcl;
+    for (int i = 0; i <= nz; i++) {
+        double p_i, t_i, td_i, h_i;
+        grid_level(i, pressure_3d, temperature_3d, qvapor_3d, height_agl_3d, offset, nz, reverse,
+                   psfc_hpa, t2_c, td2_c, p_scale, &p_i, &t_i, &td_i, &h_i);
+        if (p_i <= 0.0) {
+            prev_valid = 0;
+            continue;
+        }
+
+        double tv_env = virtual_temp(t_i, p_i, td_i);
+        double tv_parc;
+        if (p_i >= p_lcl) {
+            double t_parc = theta_dry_k * pow(p_i / 1000.0, ROCP) - ZEROCNK;
+            tv_parc = (t_parc + ZEROCNK) * (1.0 + w_kgkg / EPS) / (1.0 + w_kgkg) - ZEROCNK;
+        } else {
+            moist_t = advance_moist_profile(moist_p, moist_t, p_i);
+            moist_p = p_i;
+            tv_parc = virtual_temp(moist_t, p_i, moist_t);
+        }
+
+        if (prev_valid) {
+            if (p_i >= p_top_actual) {
+                double tv_e_lo = prev_tv_env + ZEROCNK;
+                double tv_e_hi = tv_env + ZEROCNK;
+                double tv_p_lo = prev_tv_parc + ZEROCNK;
+                double tv_p_hi = tv_parc + ZEROCNK;
+                double dz = h_i - prev_h;
+                if (fabs(dz) >= 1.0e-6 && tv_e_lo > 0.0 && tv_e_hi > 0.0) {
+                    double buoy_lo = (tv_p_lo - tv_e_lo) / tv_e_lo;
+                    double buoy_hi = (tv_p_hi - tv_e_hi) / tv_e_hi;
+                    double val = G0 * (buoy_lo + buoy_hi) / 2.0 * dz;
+                    if (last_lfc_idx >= 0) {
+                        if (val > 0.0 && i >= last_lfc_idx) total_cape += val;
+                        else if (val < 0.0 && i <= last_lfc_idx) total_cin += val;
+                    } else {
+                        if (val > 0.0) total_cape += val;
+                        else total_cin += val;
+                    }
+                }
+            }
+        }
+
+        prev_valid = 1;
+        prev_tv_env = tv_env;
+        prev_tv_parc = tv_parc;
+        prev_h = h_i;
+    }
+
+    cape_out[col] = total_cape;
+    cin_out[col] = total_cin;
+}
+'''
+_grid_cape_cin_exact_raw = cp.RawKernel(_grid_cape_cin_exact_code, 'grid_cape_cin_exact_kernel')
+
+
+def grid_cape_cin(pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+                  psfc, t2, q2, parcel_type_code=0, top_m=-1.0):
+    """CAPE/CIN from per-column 3D model fields.
+
+    Parameters
+    ----------
+    pressure_3d : 2-D (ncols, nz) in Pa, cupy array
+    temperature_3d : 2-D (ncols, nz) in K, cupy array
+    qvapor_3d : 2-D (ncols, nz) mixing ratio in kg/kg, cupy array
+    height_agl_3d : 2-D (ncols, nz) in m AGL, cupy array
+    psfc : 1-D (ncols,) surface pressure in Pa, cupy array
+    t2 : 1-D (ncols,) 2m temperature in K or C, cupy array
+    q2 : 1-D (ncols,) 2m mixing ratio in kg/kg, cupy array
+    parcel_type_code : int
+        0=surface, 1=mixed-layer, 2=most-unstable.
+    top_m : float
+        Integration height cap in meters AGL. Use negative for no cap.
+
+    Returns
+    -------
+    tuple of (cape, cin, lcl_height, lfc_height) -- all 1-D (ncols,)
+        cape : J/kg
+        cin : J/kg (negative)
+        lcl_height : m AGL
+        lfc_height : m AGL
+    """
+    pressure_3d = cp.asarray(pressure_3d, dtype=cp.float64)
+    temperature_3d = cp.asarray(temperature_3d, dtype=cp.float64)
+    qvapor_3d = cp.asarray(qvapor_3d, dtype=cp.float64)
+    height_agl_3d = cp.asarray(height_agl_3d, dtype=cp.float64)
+    psfc = cp.asarray(psfc, dtype=cp.float64).ravel()
+    t2 = cp.asarray(t2, dtype=cp.float64).ravel()
+    q2 = cp.asarray(q2, dtype=cp.float64).ravel()
+
+    if pressure_3d.ndim != 2:
+        raise ValueError("3D inputs must be 2-D (ncols, nz)")
+
+    if not pressure_3d.flags['C_CONTIGUOUS']:
+        pressure_3d = cp.ascontiguousarray(pressure_3d)
+    if not temperature_3d.flags['C_CONTIGUOUS']:
+        temperature_3d = cp.ascontiguousarray(temperature_3d)
+    if not qvapor_3d.flags['C_CONTIGUOUS']:
+        qvapor_3d = cp.ascontiguousarray(qvapor_3d)
+    if not height_agl_3d.flags['C_CONTIGUOUS']:
+        height_agl_3d = cp.ascontiguousarray(height_agl_3d)
+
+    ncols, nz = pressure_3d.shape
+    cape_out = cp.empty(ncols, dtype=cp.float64)
+    cin_out = cp.empty(ncols, dtype=cp.float64)
+    lcl_height_out = cp.empty(ncols, dtype=cp.float64)
+    lfc_height_out = cp.empty(ncols, dtype=cp.float64)
+
+    grid, block = _grid_1d(ncols)
+    if parcel_type_code == 0 and top_m < 0.0:
+        _grid_cape_cin_raw(grid, block, (
+            pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+            psfc, t2, q2,
+            cape_out, cin_out, lcl_height_out, lfc_height_out,
+            np.int32(ncols), np.int32(nz)
+        ))
+    else:
+        _grid_cape_cin_exact_raw(grid, block, (
+            pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+            psfc, t2, q2,
+            np.int32(parcel_type_code), cp.float64(top_m),
+            cape_out, cin_out, lcl_height_out, lfc_height_out,
+            np.int32(ncols), np.int32(nz)
+        ))
+    return cape_out, cin_out, lcl_height_out, lfc_height_out

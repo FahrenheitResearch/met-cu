@@ -469,25 +469,66 @@ void srh_kernel(
 ) {
     int col = blockDim.x * blockIdx.x + threadIdx.x;
     if (col >= ncols) return;
+    if (nlevels < 2) {
+        srh_pos_out[col] = 0.0;
+        srh_neg_out[col] = 0.0;
+        srh_total_out[col] = 0.0;
+        return;
+    }
 
     double pos = 0.0, neg = 0.0;
     int offset = col * nlevels;
 
+    double h_start = heights[offset];
+    double h_end = h_start + depth;
+    double prev_h = h_start;
+    double prev_u = u[offset];
+    double prev_v = v[offset];
+    bool integrated = false;
+
     for (int k = 1; k < nlevels; k++) {
-        if (heights[offset + k] > depth) break;
+        double curr_h = heights[offset + k];
+        double curr_u = u[offset + k];
+        double curr_v = v[offset + k];
+        if (curr_h <= prev_h) {
+            prev_h = curr_h;
+            prev_u = curr_u;
+            prev_v = curr_v;
+            continue;
+        }
 
-        // Storm-relative winds
-        double sru0 = u[offset + k-1] - storm_u;
-        double srv0 = v[offset + k-1] - storm_v;
-        double sru1 = u[offset + k] - storm_u;
-        double srv1 = v[offset + k] - storm_v;
+        double next_h = curr_h;
+        double next_u = curr_u;
+        double next_v = curr_v;
 
-        // Cross product (helicity integrand)
-        double val = (sru1 - sru0) * (srv0 + srv1) / 2.0
-                   - (srv1 - srv0) * (sru0 + sru1) / 2.0;
+        if (curr_h >= h_end) {
+            double frac = (h_end - prev_h) / (curr_h - prev_h);
+            if (frac < 0.0) frac = 0.0;
+            if (frac > 1.0) frac = 1.0;
+            next_h = h_end;
+            next_u = prev_u + frac * (curr_u - prev_u);
+            next_v = prev_v + frac * (curr_v - prev_v);
+        }
 
-        if (val > 0) pos += val;
+        double sru0 = prev_u - storm_u;
+        double srv0 = prev_v - storm_v;
+        double sru1 = next_u - storm_u;
+        double srv1 = next_v - storm_v;
+        double val = (sru1 * srv0) - (sru0 * srv1);
+
+        if (val > 0.0) pos += val;
         else neg += val;
+        integrated = true;
+
+        if (curr_h >= h_end) break;
+        prev_h = curr_h;
+        prev_u = curr_u;
+        prev_v = curr_v;
+    }
+
+    if (!integrated) {
+        pos = 0.0;
+        neg = 0.0;
     }
 
     srh_pos_out[col] = pos;
@@ -2046,3 +2087,325 @@ def gradient_richardson_number(height, potential_temperature, u, v):
     if squeeze:
         return out[0]
     return out
+
+
+# ===================================================================
+# Grid-scale SRH (per-column storm motion arrays)
+# ===================================================================
+
+_grid_srh_code = r"""
+extern "C" __global__
+void grid_srh_kernel(
+    const double* u,              // (ncols, nlevels) m/s
+    const double* v,              // (ncols, nlevels) m/s
+    const double* heights,        // (ncols, nlevels) meters AGL
+    const double* storm_u_arr,    // (ncols,) per-column storm motion u
+    const double* storm_v_arr,    // (ncols,) per-column storm motion v
+    double depth,                 // integration depth in meters
+    double* srh_pos_out,          // (ncols,) positive SRH
+    double* srh_neg_out,          // (ncols,) negative SRH
+    double* srh_total_out,        // (ncols,)
+    int ncols,
+    int nlevels
+) {
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
+    if (col >= ncols) return;
+    if (nlevels < 2) {
+        srh_pos_out[col] = 0.0;
+        srh_neg_out[col] = 0.0;
+        srh_total_out[col] = 0.0;
+        return;
+    }
+
+    double su = storm_u_arr[col];
+    double sv = storm_v_arr[col];
+
+    double pos = 0.0, neg = 0.0;
+    int offset = col * nlevels;
+
+    double h_start = heights[offset];
+    double h_end = h_start + depth;
+    double prev_h = h_start;
+    double prev_u = u[offset];
+    double prev_v = v[offset];
+    bool integrated = false;
+
+    for (int k = 1; k < nlevels; k++) {
+        double curr_h = heights[offset + k];
+        double curr_u = u[offset + k];
+        double curr_v = v[offset + k];
+        if (curr_h <= prev_h) {
+            prev_h = curr_h;
+            prev_u = curr_u;
+            prev_v = curr_v;
+            continue;
+        }
+
+        double next_h = curr_h;
+        double next_u = curr_u;
+        double next_v = curr_v;
+
+        if (curr_h >= h_end) {
+            double frac = (h_end - prev_h) / (curr_h - prev_h);
+            if (frac < 0.0) frac = 0.0;
+            if (frac > 1.0) frac = 1.0;
+            next_h = h_end;
+            next_u = prev_u + frac * (curr_u - prev_u);
+            next_v = prev_v + frac * (curr_v - prev_v);
+        }
+
+        double sru0 = prev_u - su;
+        double srv0 = prev_v - sv;
+        double sru1 = next_u - su;
+        double srv1 = next_v - sv;
+        double val = (sru1 * srv0) - (sru0 * srv1);
+
+        if (val > 0.0) pos += val;
+        else neg += val;
+        integrated = true;
+
+        if (curr_h >= h_end) break;
+        prev_h = curr_h;
+        prev_u = curr_u;
+        prev_v = curr_v;
+    }
+
+    if (!integrated) {
+        pos = 0.0;
+        neg = 0.0;
+    }
+
+    srh_pos_out[col] = pos;
+    srh_neg_out[col] = neg;
+    srh_total_out[col] = pos + neg;
+}
+"""
+_grid_srh_mod = cp.RawModule(code=_grid_srh_code)
+_grid_srh_kern = _grid_srh_mod.get_function("grid_srh_kernel")
+
+
+_grid_srh_exact_code = r"""
+__device__ int ordered_idx(int k, int nlevels, int reverse) {
+    return reverse ? (nlevels - 1 - k) : k;
+}
+
+__device__ double interp_at_height_ordered(
+    double target_h,
+    const double* heights,
+    const double* values,
+    int offset,
+    int nlevels,
+    int reverse
+) {
+    int first = ordered_idx(0, nlevels, reverse);
+    int last = ordered_idx(nlevels - 1, nlevels, reverse);
+    double h_first = heights[offset + first];
+    double h_last = heights[offset + last];
+    if (target_h <= h_first) {
+        return values[offset + first];
+    }
+    if (target_h >= h_last) {
+        return values[offset + last];
+    }
+    for (int k = 0; k < nlevels - 1; k++) {
+        int i0 = ordered_idx(k, nlevels, reverse);
+        int i1 = ordered_idx(k + 1, nlevels, reverse);
+        double h0 = heights[offset + i0];
+        double h1 = heights[offset + i1];
+        if (h0 <= target_h && h1 >= target_h && h1 > h0) {
+            double frac = (target_h - h0) / (h1 - h0);
+            return values[offset + i0] + frac * (values[offset + i1] - values[offset + i0]);
+        }
+    }
+    return values[offset + last];
+}
+
+extern "C" __global__
+void grid_srh_exact_kernel(
+    const double* u,              // (ncols, nlevels) m/s
+    const double* v,              // (ncols, nlevels) m/s
+    const double* heights,        // (ncols, nlevels) meters AGL
+    double depth,                 // integration top in meters AGL
+    double* srh_pos_out,          // (ncols,)
+    double* srh_neg_out,          // (ncols,)
+    double* srh_total_out,        // (ncols,)
+    int ncols,
+    int nlevels
+) {
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
+    if (col >= ncols) return;
+    if (nlevels < 2) {
+        srh_pos_out[col] = 0.0;
+        srh_neg_out[col] = 0.0;
+        srh_total_out[col] = 0.0;
+        return;
+    }
+
+    int offset = col * nlevels;
+    int reverse = heights[offset] > heights[offset + nlevels - 1];
+
+    // 1. Mean wind in the 0-6 km layer using the exact grid-column logic.
+    double sum_u = 0.0;
+    double sum_v = 0.0;
+    double sum_dz = 0.0;
+    for (int k = 0; k < nlevels - 1; k++) {
+        int i0 = ordered_idx(k, nlevels, reverse);
+        int i1 = ordered_idx(k + 1, nlevels, reverse);
+        double h_bot = heights[offset + i0];
+        double h_next = heights[offset + i1];
+        if (h_bot >= 6000.0) {
+            break;
+        }
+        double h_top = h_next < 6000.0 ? h_next : 6000.0;
+        double dz = h_top - h_bot;
+        if (dz <= 0.0) {
+            continue;
+        }
+        double u_mid = 0.5 * (u[offset + i0] + u[offset + i1]);
+        double v_mid = 0.5 * (v[offset + i0] + v[offset + i1]);
+        sum_u += u_mid * dz;
+        sum_v += v_mid * dz;
+        sum_dz += dz;
+    }
+
+    if (sum_dz <= 0.0) {
+        srh_pos_out[col] = 0.0;
+        srh_neg_out[col] = 0.0;
+        srh_total_out[col] = 0.0;
+        return;
+    }
+
+    double mean_u = sum_u / sum_dz;
+    double mean_v = sum_v / sum_dz;
+
+    // 2. 0-6 km shear vector from the surface to an interpolated 6 km wind.
+    int first = ordered_idx(0, nlevels, reverse);
+    double u_sfc = u[offset + first];
+    double v_sfc = v[offset + first];
+    double u_6km = interp_at_height_ordered(6000.0, heights, u, offset, nlevels, reverse);
+    double v_6km = interp_at_height_ordered(6000.0, heights, v, offset, nlevels, reverse);
+    double shear_u = u_6km - u_sfc;
+    double shear_v = v_6km - v_sfc;
+    double shear_mag = sqrt(shear_u * shear_u + shear_v * shear_v);
+
+    double dev_u = 0.0;
+    double dev_v = 0.0;
+    if (shear_mag > 0.1) {
+        double scale = 7.5 / shear_mag;
+        dev_u = shear_v * scale;
+        dev_v = -shear_u * scale;
+    }
+
+    double storm_u = mean_u + dev_u;
+    double storm_v = mean_v + dev_v;
+
+    // 3. Integrate SRH from the surface to the requested top.
+    double pos = 0.0;
+    double neg = 0.0;
+    for (int k = 0; k < nlevels - 1; k++) {
+        int i0 = ordered_idx(k, nlevels, reverse);
+        int i1 = ordered_idx(k + 1, nlevels, reverse);
+        double h_bot = heights[offset + i0];
+        double h_next = heights[offset + i1];
+        if (h_bot >= depth) {
+            break;
+        }
+
+        double h_top = h_next < depth ? h_next : depth;
+        if (h_top <= h_bot) {
+            continue;
+        }
+
+        double u_bot = u[offset + i0];
+        double v_bot = v[offset + i0];
+        double u_top_val = u[offset + i1];
+        double v_top_val = v[offset + i1];
+        if (h_top < h_next && h_next > h_bot) {
+            double frac = (h_top - h_bot) / (h_next - h_bot);
+            u_top_val = u_bot + frac * (u[offset + i1] - u_bot);
+            v_top_val = v_bot + frac * (v[offset + i1] - v_bot);
+        }
+
+        double sr_u_bot = u_bot - storm_u;
+        double sr_v_bot = v_bot - storm_v;
+        double sr_u_top = u_top_val - storm_u;
+        double sr_v_top = v_top_val - storm_v;
+        double val = sr_u_top * sr_v_bot - sr_u_bot * sr_v_top;
+
+        if (val > 0.0) {
+            pos += val;
+        } else {
+            neg += val;
+        }
+    }
+
+    srh_pos_out[col] = pos;
+    srh_neg_out[col] = neg;
+    srh_total_out[col] = pos + neg;
+}
+"""
+_grid_srh_exact_mod = cp.RawModule(code=_grid_srh_exact_code)
+_grid_srh_exact_kern = _grid_srh_exact_mod.get_function("grid_srh_exact_kernel")
+
+
+def grid_storm_relative_helicity(u, v, height, depth, storm_u_arr=None, storm_v_arr=None):
+    """Storm-relative helicity with optional per-column storm motion arrays.
+
+    Parameters
+    ----------
+    u, v : array (m/s) — shape (ncols, nlevels)
+    height : array (m AGL) — shape (ncols, nlevels)
+    depth : float (m)
+    storm_u_arr, storm_v_arr : array (m/s) — shape (ncols,), optional
+        When omitted, the kernel computes the exact grid-column Bunkers storm
+        motion internally, matching metrust.compute_srh.
+
+    Returns
+    -------
+    (pos, neg, total) — each (ncols,)
+    """
+    u_d = _to_cp(u)
+    v_d = _to_cp(v)
+    h_d = _to_cp(height)
+    su_d = _to_cp(storm_u_arr)
+    sv_d = _to_cp(storm_v_arr)
+
+    if u_d.ndim == 1:
+        u_d = u_d.reshape(1, -1)
+        v_d = v_d.reshape(1, -1)
+        h_d = h_d.reshape(1, -1)
+        su_d = su_d.reshape(1)
+        sv_d = sv_d.reshape(1)
+        squeeze = True
+    else:
+        squeeze = False
+
+    ncols, nlevels = u_d.shape
+    pos = cp.empty(ncols, dtype=cp.float64)
+    neg = cp.empty(ncols, dtype=cp.float64)
+    tot = cp.empty(ncols, dtype=cp.float64)
+    grid = (_ceil_div(ncols, _BLOCK),)
+    block = (min(ncols, _BLOCK),)
+    if storm_u_arr is None and storm_v_arr is None:
+        _grid_srh_exact_kern(grid, block, (
+            u_d, v_d, h_d, cp.float64(depth),
+            pos, neg, tot,
+            np.int32(ncols), np.int32(nlevels),
+        ))
+    else:
+        if storm_u_arr is None or storm_v_arr is None:
+            raise ValueError("storm_u_arr and storm_v_arr must be provided together")
+        su_d = _to_cp(storm_u_arr)
+        sv_d = _to_cp(storm_v_arr)
+        if su_d.ndim == 0:
+            su_d = su_d.reshape(1)
+            sv_d = sv_d.reshape(1)
+        _grid_srh_kern(grid, block, (
+            u_d, v_d, h_d,
+            su_d, sv_d, cp.float64(depth),
+            pos, neg, tot,
+            np.int32(ncols), np.int32(nlevels),
+        ))
+    if squeeze:
+        return float(pos[0]), float(neg[0]), float(tot[0])
+    return pos, neg, tot

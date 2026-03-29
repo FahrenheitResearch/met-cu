@@ -233,7 +233,7 @@ wdir_sfc, ms = timed("Surface Wind Direction",
 result("Sfc Wind Dir", wdir_sfc, ms, "deg")
 
 srh_03, ms = timed("0-3km SRH (1.9M columns)",
-    lambda: wind.storm_relative_helicity(u3_gpu, v3_gpu, h3_gpu, 0.0, 0.0, 3000.0))
+    lambda: wind.storm_relative_helicity(u3_gpu, v3_gpu, h3_gpu, 3000.0, 0.0, 0.0))
 if isinstance(srh_03, tuple):
     result("0-3km SRH", srh_03[2], ms, "m2/s2")
     srh_vals = srh_03[2]
@@ -242,7 +242,7 @@ else:
     srh_vals = srh_03
 
 srh_01, ms = timed("0-1km SRH (1.9M columns)",
-    lambda: wind.storm_relative_helicity(u3_gpu, v3_gpu, h3_gpu, 0.0, 0.0, 1000.0))
+    lambda: wind.storm_relative_helicity(u3_gpu, v3_gpu, h3_gpu, 1000.0, 0.0, 0.0))
 if isinstance(srh_01, tuple):
     result("0-1km SRH", srh_01[2], ms, "m2/s2")
 else:

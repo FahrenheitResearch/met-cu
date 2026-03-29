@@ -24,6 +24,16 @@ import numpy as np
 
 from metcu.utils import to_gpu, to_cpu, strip_units
 
+try:
+    from metrust.units import units
+except Exception:
+    units = None
+
+try:
+    import xarray as xr
+except Exception:
+    xr = None
+
 # --- thermo kernels ---
 from metcu.kernels.thermo import (
     potential_temperature as _k_potential_temperature,
@@ -96,6 +106,8 @@ from metcu.kernels.thermo import (
     brunt_vaisala_frequency_squared as _k_brunt_vaisala_frequency_squared,
     brunt_vaisala_period as _k_brunt_vaisala_period,
     static_stability as _k_static_stability,
+    grid_precipitable_water as _k_grid_precipitable_water,
+    grid_cape_cin as _k_grid_cape_cin,
 )
 
 # --- wind kernels ---
@@ -139,6 +151,7 @@ from metcu.kernels.wind import (
     warm_nose_check as _k_warm_nose_check,
     dendritic_growth_zone as _k_dendritic_growth_zone,
     convective_inhibition_depth as _k_convective_inhibition_depth,
+    grid_storm_relative_helicity as _k_grid_srh,
 )
 
 # --- grid kernels ---
@@ -175,6 +188,7 @@ from metcu.kernels.grid import (
     get_layer_heights as _k_get_layer_heights,
     mean_pressure_weighted as _k_mean_pressure_weighted,
     isentropic_interpolation as _k_isentropic_interpolation,
+    composite_reflectivity_from_hydrometeors as _k_composite_reflectivity_from_hydrometeors,
 )
 
 
@@ -194,17 +208,915 @@ def _STUB_thickness_from_rh(p, t, rh):
     return -(287.05 / 9.80665) * cp.trapz(tv, cp.log(p))
 
 
+def _as_magnitude_in_units(arr, unit=None):
+    """Convert a pint quantity to a target unit and return raw magnitudes."""
+    if hasattr(arr, 'to') and unit is not None:
+        try:
+            return arr.to(unit).magnitude
+        except Exception:
+            pass
+    if hasattr(arr, 'magnitude'):
+        return arr.magnitude
+    return arr
+
+
+def _log_interp_pressure_value(target_p, pressure, values):
+    """Interpolate a profile value at a pressure using log-pressure spacing."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    v = np.asarray(values, dtype=np.float64).ravel()
+    if p.size != v.size:
+        raise ValueError("pressure and values must have the same length")
+    if p.size == 0:
+        return np.nan
+    if p[0] < p[-1]:
+        p = p[::-1]
+        v = v[::-1]
+    if target_p >= p[0]:
+        return float(v[0])
+    if target_p <= p[-1]:
+        return float(v[-1])
+    return float(np.interp(np.log(target_p), np.log(p[::-1]), v[::-1]))
+
+
+def _sharppy_mixratio_gkg(pressure_hpa, dewpoint_c):
+    """SHARPpy-style mixing ratio from pressure and dewpoint in g/kg."""
+    x = 0.02 * (dewpoint_c - 12.5 + (7500.0 / pressure_hpa))
+    enhancement = 1.0 + (0.0000045 * pressure_hpa) + (0.0014 * x * x)
+    pol = dewpoint_c * (1.1112018e-17 + (dewpoint_c * -3.0994571e-20))
+    pol = dewpoint_c * (2.1874425e-13 + (dewpoint_c * (-1.789232e-15 + pol)))
+    pol = dewpoint_c * (4.3884180e-09 + (dewpoint_c * (-2.988388e-11 + pol)))
+    pol = dewpoint_c * (7.8736169e-05 + (dewpoint_c * (-6.111796e-07 + pol)))
+    pol = 0.99999683 + (dewpoint_c * (-9.082695e-03 + pol))
+    vapor_pressure_hpa = enhancement * (6.1078 / (pol ** 8))
+    return 621.97 * (vapor_pressure_hpa / (pressure_hpa - vapor_pressure_hpa))
+
+
+def _sharppy_temp_at_mixrat(mixing_ratio_gkg, pressure_hpa):
+    """SHARPpy temp_at_mixrat approximation returning Celsius."""
+    c1 = 0.0498646455
+    c2 = 2.4082965
+    c3 = 7.07475
+    c4 = 38.9114
+    c5 = 0.0915
+    c6 = 1.2035
+    x = np.log10(mixing_ratio_gkg * pressure_hpa / (622.0 + mixing_ratio_gkg))
+    return (10.0 ** (c1 * x + c2) - c3 + c4 * (10.0 ** (c5 * x) - c6) ** 2) - 273.15
+
+
+def _extract_layer_1d(pressure, values, p_bottom, p_top, interpolate=True):
+    """Extract a 1D pressure layer with MetRust-compatible boundary interpolation."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    v = np.asarray(values, dtype=np.float64).ravel()
+    if p.size != v.size:
+        raise ValueError("pressure and values must have the same length")
+    if p.size == 0:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+
+    flipped = p[0] < p[-1]
+    if flipped:
+        p = p[::-1]
+        v = v[::-1]
+
+    p_out = []
+    v_out = []
+
+    for i in range(p.size):
+        pi = p[i]
+        if pi <= p_bottom and pi >= p_top:
+            if (
+                not p_out and
+                i > 0 and
+                p[i - 1] > p_bottom and
+                interpolate and
+                not np.isclose(pi, p_bottom)
+            ):
+                p_out.append(float(p_bottom))
+                v_out.append(_log_interp_pressure_value(p_bottom, p[i - 1:i + 1], v[i - 1:i + 1]))
+            if not p_out or not np.isclose(p_out[-1], pi):
+                p_out.append(float(pi))
+                v_out.append(float(v[i]))
+        elif pi < p_top and p_out:
+            if (
+                i > 0 and
+                p[i - 1] >= p_top and
+                interpolate and
+                not np.isclose(p[i - 1], p_top)
+            ):
+                p_out.append(float(p_top))
+                v_out.append(_log_interp_pressure_value(p_top, p[i - 1:i + 1], v[i - 1:i + 1]))
+            break
+
+    if not p_out:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+
+    p_arr = np.asarray(p_out, dtype=np.float64)
+    v_arr = np.asarray(v_out, dtype=np.float64)
+    if flipped:
+        p_arr = p_arr[::-1]
+        v_arr = v_arr[::-1]
+    return p_arr, v_arr
+
+
+def _svp_hpa_ambaum(t_c):
+    """MetRust/MetPy saturation vapor pressure over liquid water in hPa."""
+    t_k = float(t_c) + 273.15
+    t0 = 273.16
+    lv0 = 2500840.0
+    cp_l = 4219.4
+    cp_v = 1860.078011865639
+    rv = 461.52311572606084
+    latent = lv0 - (cp_l - cp_v) * (t_k - t0)
+    heat_pow = (cp_l - cp_v) / rv
+    exp_term = (lv0 / t0 - latent / t_k) / rv
+    return 611.2 * (t0 / t_k) ** heat_pow * np.exp(exp_term) / 100.0
+
+
+def _lcl_temperature_c(temp_c, dewpoint_c):
+    """Bolton-style LCL temperature in Celsius."""
+    spread = float(temp_c) - float(dewpoint_c)
+    delta = spread * (
+        1.2185
+        + 0.001278 * float(temp_c)
+        + spread * (-0.00219 + 1.173e-5 * spread - 0.0000052 * float(temp_c))
+    )
+    return float(temp_c) - delta
+
+
+def _drylift_cpu(pressure_hpa, temp_c, dewpoint_c):
+    """Return (p_lcl, t_lcl) using the same drylift relation as the kernels."""
+    t_lcl = _lcl_temperature_c(temp_c, dewpoint_c)
+    p_lcl = 1000.0 * (
+        (t_lcl + 273.15)
+        / ((float(temp_c) + 273.15) * (1000.0 / float(pressure_hpa)) ** 0.2857142857142857)
+    ) ** (1.0 / 0.2857142857142857)
+    return p_lcl, t_lcl
+
+
+def _vappres_sharppy_hpa(temp_c):
+    """SHARPpy/Wexler saturation vapor pressure in hPa."""
+    pol = temp_c * (1.1112018e-17 + (temp_c * -3.0994571e-20))
+    pol = temp_c * (2.1874425e-13 + (temp_c * (-1.789232e-15 + pol)))
+    pol = temp_c * (4.3884180e-09 + (temp_c * (-2.988388e-11 + pol)))
+    pol = temp_c * (7.8736169e-05 + (temp_c * (-6.111796e-07 + pol)))
+    pol = 0.99999683 + (temp_c * (-9.082695e-03 + pol))
+    return 6.1078 / (pol ** 8)
+
+
+def _wobf_c(temp_c):
+    """Wobus function used by SHARPpy-style moist lifting."""
+    tc = float(temp_c) - 20.0
+    if tc <= 0.0:
+        npol = 1.0 + tc * (
+            -8.841660499999999e-3
+            + tc * (
+                1.4714143e-4
+                + tc * (-9.671989000000001e-7 + tc * (-3.2607217e-8 + tc * (-3.8598073e-10)))
+            )
+        )
+        n2 = npol * npol
+        return 15.13 / (n2 * n2)
+    ppol = tc * (
+        4.9618922e-07
+        + tc * (-6.1059365e-09 + tc * (3.9401551e-11 + tc * (-1.2588129e-13 + tc * 1.6688280e-16)))
+    )
+    ppol = 1.0 + tc * (3.6182989e-03 + tc * (-1.3603273e-05 + ppol))
+    p2 = ppol * ppol
+    return (29.93 / (p2 * p2)) + (0.96 * tc) - 14.8
+
+
+def _thetam_from_lcl(p_lcl, t_lcl):
+    """Moist theta used by satlift, in Celsius-space."""
+    theta_c = (float(t_lcl) + 273.15) * ((1000.0 / float(p_lcl)) ** 0.2857142857142857) - 273.15
+    return theta_c - _wobf_c(theta_c) + _wobf_c(float(t_lcl))
+
+
+def _satlift_c(pressure_hpa, thetam_c):
+    """Lift a saturated parcel to pressure_hpa using the SHARPpy satlift iteration."""
+    p = float(pressure_hpa)
+    if p >= 1000.0:
+        return float(thetam_c)
+    pwrp = (p / 1000.0) ** 0.2857142857142857
+    t1 = (float(thetam_c) + 273.15) * pwrp - 273.15
+    e1 = _wobf_c(t1) - _wobf_c(float(thetam_c))
+    rate = 1.0
+    for _ in range(7):
+        if abs(e1) < 0.001:
+            break
+        t2 = t1 - (e1 * rate)
+        e2 = (t2 + 273.15) / pwrp - 273.15
+        e2 += _wobf_c(t2) - _wobf_c(e2) - float(thetam_c)
+        denom = e2 - e1
+        if abs(denom) < 1e-12:
+            break
+        rate = (t2 - t1) / denom
+        t1 = t2
+        e1 = e2
+    return t1 - e1 * rate
+
+
+def _moist_lapse_rate_hpa(p_hpa, t_c):
+    """Moist adiabatic lapse rate in K/hPa matching wx-math."""
+    t_k = float(t_c) + 273.15
+    es = _svp_hpa_ambaum(t_c)
+    rs = 0.6219569100577033 * es / (float(p_hpa) - es)
+    numerator = (287.04749097718457 * t_k + 2500840.0 * rs) / float(p_hpa)
+    denominator = 1004.6662184201462 + (
+        (2500840.0 * 2500840.0 * rs * 0.6219569100577033)
+        / (287.04749097718457 * t_k * t_k)
+    )
+    return numerator / denominator
+
+
+def _moist_lapse_profile_numpy(pressure, t_start_c):
+    """RK4 moist-adiabatic parcel profile matching wx-math."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    if p.size == 0:
+        return np.empty(0, dtype=np.float64)
+    result = np.empty_like(p)
+    result[0] = float(t_start_c)
+    t_cur = float(t_start_c)
+    for i in range(1, p.size):
+        dp = p[i] - p[i - 1]
+        if abs(dp) < 1e-10:
+            result[i] = t_cur
+            continue
+        n_steps = max(int(abs(dp) / 5.0), 4)
+        h = dp / n_steps
+        p_cur = p[i - 1]
+        for _ in range(n_steps):
+            k1 = h * _moist_lapse_rate_hpa(p_cur, t_cur)
+            k2 = h * _moist_lapse_rate_hpa(p_cur + h / 2.0, t_cur + k1 / 2.0)
+            k3 = h * _moist_lapse_rate_hpa(p_cur + h / 2.0, t_cur + k2 / 2.0)
+            k4 = h * _moist_lapse_rate_hpa(p_cur + h, t_cur + k3)
+            t_cur += (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
+            p_cur += h
+        result[i] = t_cur
+    return result
+
+
+def _lift_parcel_profile_virtual_temperature_numpy(pressure, temperature, dewpoint):
+    """MetRust-compatible lifted parcel virtual-temperature profile."""
+    p_prof = np.asarray(pressure, dtype=np.float64).ravel()
+    t_prof = np.asarray(temperature, dtype=np.float64).ravel()
+    td_prof = np.asarray(dewpoint, dtype=np.float64).ravel()
+    if p_prof.size == 0:
+        return np.nan, np.nan, np.empty(0, dtype=np.float64)
+
+    p_sfc = float(p_prof[0])
+    t_sfc = float(t_prof[0])
+    td_sfc = float(td_prof[0])
+    p_lcl, t_lcl = _drylift_cpu(p_sfc, t_sfc, td_sfc)
+    thetam = _thetam_from_lcl(p_lcl, t_lcl)
+    theta_dry_k = (t_sfc + 273.15) * ((1000.0 / p_sfc) ** 0.2857142857142857)
+    r_parcel_gkg = _sharppy_mixratio_gkg(p_sfc, td_sfc)
+
+    parcel_tv = np.empty_like(p_prof)
+    for i, p_val in enumerate(p_prof):
+        if p_val > p_lcl:
+            t_parc_k = theta_dry_k * ((p_val / 1000.0) ** 0.2857142857142857)
+            t_parc = t_parc_k - 273.15
+            parcel_tv[i] = (t_parc + 273.15) * (1.0 + 0.61 * (r_parcel_gkg / 1000.0)) - 273.15
+        else:
+            t_parc = _satlift_c(p_val, thetam)
+            parcel_tv[i] = _virtual_temp_from_dewpoint_c(t_parc, p_val, t_parc)
+
+    return p_lcl, t_lcl, parcel_tv
+
+
+def _parcel_profile_with_lcl_numpy(pressure, t_surface_c, td_surface_c):
+    """MetRust-compatible parcel profile with the LCL inserted."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    if p.size == 0:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+
+    t_surface_c = float(t_surface_c)
+    td_surface_c = float(td_surface_c)
+    p_lcl, t_lcl = _drylift_cpu(float(p[0]), t_surface_c, td_surface_c)
+    thetam = _thetam_from_lcl(p_lcl, t_lcl)
+
+    p_aug = []
+    lcl_inserted = False
+    for p_val in p:
+        if not lcl_inserted and p_val <= p_lcl:
+            if abs(p_val - p_lcl) > 0.01:
+                p_aug.append(p_lcl)
+            lcl_inserted = True
+        p_aug.append(float(p_val))
+    if not lcl_inserted:
+        p_aug.append(p_lcl)
+
+    t_surface_k = t_surface_c + 273.15
+    p_surface = float(p[0])
+    t_aug = []
+    for p_val in p_aug:
+        if p_val > p_lcl:
+            t_k = t_surface_k * ((p_val / p_surface) ** 0.2857142857142857)
+            t_aug.append(t_k - 273.15)
+        else:
+            t_aug.append(_satlift_c(p_val, thetam))
+
+    return np.asarray(p_aug, dtype=np.float64), np.asarray(t_aug, dtype=np.float64)
+
+
+def _virtual_temp_from_dewpoint_c(temp_c, pressure_hpa, dewpoint_c):
+    """Virtual temperature in Celsius using the same SHARPpy-style mix ratio."""
+    w = _sharppy_mixratio_gkg(float(pressure_hpa), min(float(dewpoint_c), float(temp_c))) / 1000.0
+    t_k = float(temp_c) + 273.15
+    return t_k * (1.0 + 0.61 * w) - 273.15
+
+
+def _height_at_pressure_value(target_p, pressure, heights):
+    """Linearly interpolate height at target pressure from a descending profile."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    h = np.asarray(heights, dtype=np.float64).ravel()
+    if p.size != h.size:
+        raise ValueError("pressure and heights must have the same length")
+    if p.size == 0:
+        return np.nan
+    if p[0] < p[-1]:
+        p = p[::-1]
+        h = h[::-1]
+    for i in range(p.size - 1):
+        if p[i] >= target_p >= p[i + 1]:
+            p0 = p[i]
+            p1 = p[i + 1]
+            if p1 == p0:
+                return float(h[i])
+            frac = (target_p - p0) / (p1 - p0)
+            return float(h[i] + frac * (h[i + 1] - h[i]))
+    if target_p > p[0]:
+        return float(h[0])
+    if target_p < p[-1]:
+        return float(h[-1])
+    return np.nan
+
+
+def _pressure_at_height_value(target_z, heights, pressure):
+    """Linearly interpolate pressure at a target height."""
+    h = np.asarray(heights, dtype=np.float64).ravel()
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    if h.size != p.size:
+        raise ValueError("heights and pressure must have the same length")
+    if h.size == 0:
+        return np.nan
+    if h[0] > h[-1]:
+        h = h[::-1]
+        p = p[::-1]
+    if target_z <= h[0]:
+        return float(p[0])
+    if target_z >= h[-1]:
+        return float(p[-1])
+    idx = np.searchsorted(h, target_z, side="left")
+    h0 = h[idx - 1]
+    h1 = h[idx]
+    if h1 == h0:
+        return float(p[idx - 1])
+    frac = (target_z - h0) / (h1 - h0)
+    return float(p[idx - 1] + frac * (p[idx] - p[idx - 1]))
+
+
+def _standard_agl_heights_from_pressure(pressure_hpa):
+    """Standard-atmosphere AGL heights for a pressure profile."""
+    p = np.asarray(pressure_hpa, dtype=np.float64)
+    z = (288.0 / 0.0065) * (1.0 - (p / 1013.25) ** (1.0 / (9.80665 * 0.0289644 / (8.31447 * 0.0065))))
+    return z - float(z[0])
+
+
+def _parcel_profile_cape_cin_numpy(pressure, temperature, dewpoint, parcel_profile):
+    """MetRust-compatible CAPE/CIN integration for an explicit parcel profile."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    t = np.asarray(temperature, dtype=np.float64).ravel()
+    td = np.asarray(dewpoint, dtype=np.float64).ravel()
+    t_parcel = np.asarray(parcel_profile, dtype=np.float64).ravel()
+
+    z = np.zeros(len(p), dtype=np.float64)
+    for i in range(1, len(p)):
+        if p[i] <= 0.0 or p[i - 1] <= 0.0:
+            z[i] = z[i - 1]
+            continue
+        tv_mean = (
+            _virtual_temp_from_dewpoint_c(t[i - 1], p[i - 1], td[i - 1])
+            + _virtual_temp_from_dewpoint_c(t[i], p[i], td[i])
+        ) / 2.0 + 273.15
+        z[i] = z[i - 1] + (287.04749 * tv_mean / 9.80665) * np.log(p[i - 1] / p[i])
+
+    buoyancy = np.zeros(len(p), dtype=np.float64)
+    for i in range(len(p)):
+        if p[i] <= 0.0:
+            continue
+        tv_e = _virtual_temp_from_dewpoint_c(t[i], p[i], td[i]) + 273.15
+        tv_p = _virtual_temp_from_dewpoint_c(t_parcel[i], p[i], t_parcel[i]) + 273.15
+        if tv_e > 0.0:
+            buoyancy[i] = (tv_p - tv_e) / tv_e
+
+    lfc_idx = None
+    for i in range(1, len(p)):
+        if buoyancy[i] > 0.0 and buoyancy[i - 1] <= 0.0:
+            lfc_idx = i
+            break
+    if lfc_idx is None and any(b > 0.0 for b in buoyancy[1:]):
+        lfc_idx = 0
+
+    el_idx = len(p) - 1
+    if lfc_idx is not None:
+        for i in range(lfc_idx + 1, len(p)):
+            if buoyancy[i] <= 0.0 and buoyancy[i - 1] > 0.0:
+                el_idx = i
+
+    cape_val = 0.0
+    cin_val = 0.0
+    for i in range(1, len(p)):
+        if p[i] <= 0.0:
+            continue
+        tv_e_lo = _virtual_temp_from_dewpoint_c(t[i - 1], p[i - 1], td[i - 1]) + 273.15
+        tv_e_hi = _virtual_temp_from_dewpoint_c(t[i], p[i], td[i]) + 273.15
+        tv_p_lo = _virtual_temp_from_dewpoint_c(t_parcel[i - 1], p[i - 1], t_parcel[i - 1]) + 273.15
+        tv_p_hi = _virtual_temp_from_dewpoint_c(t_parcel[i], p[i], t_parcel[i]) + 273.15
+        dz = z[i] - z[i - 1]
+        if abs(dz) < 1e-6 or tv_e_lo <= 0.0 or tv_e_hi <= 0.0:
+            continue
+        buoy_lo = (tv_p_lo - tv_e_lo) / tv_e_lo
+        buoy_hi = (tv_p_hi - tv_e_hi) / tv_e_hi
+        val = 9.80665 * (buoy_lo + buoy_hi) / 2.0 * dz
+        if lfc_idx is not None and i <= el_idx:
+            if val > 0.0 and i >= lfc_idx:
+                cape_val += val
+            elif val < 0.0 and i <= lfc_idx:
+                cin_val += val
+
+    if lfc_idx is None or cape_val <= 0.0:
+        return 0.0, 0.0
+    return cape_val, cin_val
+
+
+def _cape_cin_core_compatible(
+    pressure,
+    temperature,
+    dewpoint,
+    height_agl,
+    psfc,
+    t2m,
+    td2m,
+    parcel_type="sb",
+    ml_depth=100.0,
+    mu_depth=300.0,
+    top_m=None,
+):
+    """MetRust-compatible generic cape_cin wrapper semantics."""
+    p_prof = np.asarray(pressure, dtype=np.float64).ravel()
+    t_prof = np.asarray(temperature, dtype=np.float64).ravel()
+    td_prof = np.asarray(dewpoint, dtype=np.float64).ravel()
+    h_prof = np.asarray(height_agl, dtype=np.float64).ravel()
+
+    td2m = min(float(td2m), float(t2m))
+
+    p_aug = np.concatenate(([float(psfc)], p_prof))
+    t_aug = np.concatenate(([float(t2m)], t_prof))
+    td_aug = np.concatenate(([td2m], np.minimum(td_prof, t_prof)))
+    h_aug = np.concatenate(([0.0], h_prof))
+
+    parcel_type = str(parcel_type or "sb").lower()
+    if parcel_type == "ml":
+        p_start, t_start, td_start = get_mixed_layer_parcel(p_aug, t_aug, td_aug, float(ml_depth))
+        p_start = float(cp.asnumpy(cp.asarray(p_start)))
+        t_start = float(cp.asnumpy(cp.asarray(t_start)))
+        td_start = float(cp.asnumpy(cp.asarray(td_start)))
+    elif parcel_type == "mu":
+        p_start, t_start, td_start, _ = get_most_unstable_parcel(p_aug, t_aug, td_aug, float(mu_depth))
+        p_start = float(cp.asnumpy(cp.asarray(p_start)))
+        t_start = float(cp.asnumpy(cp.asarray(t_start)))
+        td_start = float(cp.asnumpy(cp.asarray(td_start)))
+    else:
+        p_start = float(psfc)
+        t_start = float(t2m)
+        td_start = td2m
+
+    p_lcl, t_lcl = _drylift_cpu(p_start, t_start, td_start)
+    h_lcl = _height_at_pressure_value(p_lcl, p_aug, h_aug)
+    thetam = _thetam_from_lcl(p_lcl, t_lcl)
+
+    lfc_p = p_lcl
+    el_p = p_lcl
+    found_positive_layer = False
+    in_pos_layer = False
+
+    start_idx = 0
+    for i in range(len(p_aug)):
+        if p_aug[i] <= p_lcl:
+            start_idx = i
+            break
+
+    for i in range(start_idx, len(p_aug)):
+        p_curr = p_aug[i]
+        tv_env = _virtual_temp_from_dewpoint_c(t_aug[i], p_curr, td_aug[i])
+        t_parc = _satlift_c(p_curr, thetam)
+        tv_parc = _virtual_temp_from_dewpoint_c(t_parc, p_curr, t_parc)
+        buoyancy = tv_parc - tv_env
+
+        if buoyancy > 0.0:
+            if not in_pos_layer:
+                in_pos_layer = True
+                if i > 0:
+                    p_prev = p_aug[i - 1]
+                    tv_env_prev = _virtual_temp_from_dewpoint_c(t_aug[i - 1], p_prev, td_aug[i - 1])
+                    t_parc_prev = _satlift_c(p_prev, thetam)
+                    tv_parc_prev = _virtual_temp_from_dewpoint_c(t_parc_prev, p_prev, t_parc_prev)
+                    buoy_prev = tv_parc_prev - tv_env_prev
+                    if buoyancy != buoy_prev:
+                        frac = (0.0 - buoy_prev) / (buoyancy - buoy_prev)
+                        lfc_p = p_prev + frac * (p_curr - p_prev)
+                    else:
+                        lfc_p = p_curr
+                else:
+                    lfc_p = p_curr
+                el_p = p_aug[-1]
+                found_positive_layer = True
+        elif in_pos_layer:
+            in_pos_layer = False
+            p_prev = p_aug[i - 1]
+            tv_env_prev = _virtual_temp_from_dewpoint_c(t_aug[i - 1], p_prev, td_aug[i - 1])
+            t_parc_prev = _satlift_c(p_prev, thetam)
+            tv_parc_prev = _virtual_temp_from_dewpoint_c(t_parc_prev, p_prev, t_parc_prev)
+            buoy_prev = tv_parc_prev - tv_env_prev
+            if buoyancy != buoy_prev:
+                frac = (0.0 - buoy_prev) / (buoyancy - buoy_prev)
+                el_p = p_prev + frac * (p_curr - p_prev)
+            else:
+                el_p = p_curr
+
+    if in_pos_layer:
+        el_p = p_aug[-1]
+
+    if not found_positive_layer:
+        return 0.0, 0.0, h_lcl, np.nan
+
+    if np.isnan(lfc_p) or lfc_p > p_lcl:
+        lfc_p = p_lcl
+    h_lfc = _height_at_pressure_value(lfc_p, p_aug, h_aug)
+
+    theta_dry_k = (t_start + 273.15) * ((1000.0 / p_start) ** 0.2857142857142857)
+    w_kgkg = _sharppy_mixratio_gkg(p_start, td_start) / 1000.0
+    p_moist = [p_lcl]
+    for pi in p_aug:
+        if pi < p_lcl and pi > 0.0:
+            p_moist.append(float(pi))
+    p_moist = np.asarray(p_moist, dtype=np.float64)
+    moist_temps = _moist_lapse_profile_numpy(p_moist, t_lcl) if len(p_moist) > 1 else np.asarray([t_lcl], dtype=np.float64)
+
+    n = len(p_aug)
+    tv_parc_arr = np.full(n, np.nan, dtype=np.float64)
+    tv_env_arr = np.zeros(n, dtype=np.float64)
+
+    for i in range(n):
+        if p_aug[i] <= 0.0:
+            continue
+        tv_env_arr[i] = _virtual_temp_from_dewpoint_c(t_aug[i], p_aug[i], td_aug[i])
+        if p_aug[i] >= p_lcl:
+            t_parc_k = theta_dry_k * ((p_aug[i] / 1000.0) ** 0.2857142857142857)
+            t_parc = t_parc_k - 273.15
+            tv_parc_arr[i] = (t_parc + 273.15) * (1.0 + w_kgkg / 0.6219569100577033) / (1.0 + w_kgkg) - 273.15
+        else:
+            t_parc = _log_interp_pressure_value(p_aug[i], p_moist, moist_temps)
+            tv_parc_arr[i] = _virtual_temp_from_dewpoint_c(t_parc, p_aug[i], t_parc)
+
+    z_calc = np.zeros(n, dtype=np.float64)
+    for i in range(1, n):
+        if p_aug[i] <= 0.0 or p_aug[i - 1] <= 0.0:
+            z_calc[i] = z_calc[i - 1]
+            continue
+        tv_mean = (tv_env_arr[i - 1] + tv_env_arr[i]) / 2.0 + 273.15
+        z_calc[i] = z_calc[i - 1] + (287.058 * tv_mean / 9.80665) * np.log(p_aug[i - 1] / p_aug[i])
+
+    z_use = h_aug if np.any(h_aug > 0.0) else z_calc
+
+    p_top_limit = el_p
+    if top_m is not None:
+        p_top_m = _pressure_at_height_value(float(top_m), z_use, p_aug)
+        if p_top_m >= p_top_limit:
+            p_top_limit = max(p_top_m, p_aug[-1])
+
+    last_lfc_idx = None
+    for i in range(1, n):
+        if not np.isfinite(tv_parc_arr[i]) or not np.isfinite(tv_parc_arr[i - 1]):
+            continue
+        buoy = tv_parc_arr[i] - tv_env_arr[i]
+        buoy_prev = tv_parc_arr[i - 1] - tv_env_arr[i - 1]
+        if buoy > 0.0 and buoy_prev <= 0.0:
+            last_lfc_idx = i
+
+    total_cape = 0.0
+    total_cin = 0.0
+    p_top_actual = p_top_limit if p_top_limit > 0.0 else p_aug[-1]
+
+    for i in range(1, n):
+        if p_aug[i] <= 0.0 or not np.isfinite(tv_parc_arr[i]) or not np.isfinite(tv_parc_arr[i - 1]):
+            continue
+        if p_aug[i] < p_top_actual:
+            continue
+        tv_e_lo = tv_env_arr[i - 1] + 273.15
+        tv_e_hi = tv_env_arr[i] + 273.15
+        tv_p_lo = tv_parc_arr[i - 1] + 273.15
+        tv_p_hi = tv_parc_arr[i] + 273.15
+        dz = z_use[i] - z_use[i - 1]
+        if abs(dz) < 1e-6 or tv_e_lo <= 0.0 or tv_e_hi <= 0.0:
+            continue
+        buoy_lo = (tv_p_lo - tv_e_lo) / tv_e_lo
+        buoy_hi = (tv_p_hi - tv_e_hi) / tv_e_hi
+        val = 9.80665 * (buoy_lo + buoy_hi) / 2.0 * dz
+        if last_lfc_idx is not None:
+            if val > 0.0 and i >= last_lfc_idx:
+                total_cape += val
+            elif val < 0.0 and i <= last_lfc_idx:
+                total_cin += val
+        else:
+            if val > 0.0:
+                total_cape += val
+            else:
+                total_cin += val
+
+    return total_cape, total_cin, h_lcl, h_lfc
+
+
+def _cape_cin_from_parcel_state(pressure, temperature, dewpoint, p_start, t_start, td_start):
+    """MetRust-compatible CAPE/CIN integration for a specified starting parcel."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    t = np.asarray(temperature, dtype=np.float64).ravel()
+    td = np.asarray(dewpoint, dtype=np.float64).ravel()
+    if p.size == 0:
+        return 0.0, 0.0, np.nan, np.nan, np.nan
+
+    if p[0] < p[-1]:
+        p = p[::-1]
+        t = t[::-1]
+        td = td[::-1]
+
+    t_start = float(t_start)
+    td_start = min(float(td_start), t_start)
+    p_start = float(p_start)
+
+    p_lcl, t_lcl = _drylift_cpu(p_start, t_start, td_start)
+    theta_dry_k = (t_start + 273.15) * ((1000.0 / p_start) ** 0.2857142857142857)
+    w_kgkg = _sharppy_mixratio_gkg(p_start, td_start) / 1000.0
+
+    p_moist = [p_lcl]
+    for pi in p:
+        if pi < p_lcl and pi > 0.0:
+            p_moist.append(float(pi))
+    p_moist = np.asarray(p_moist, dtype=np.float64)
+    moist_profile = _moist_lapse_profile_numpy(p_moist, t_lcl)
+
+    tv_parcel = np.empty_like(p)
+    tv_env = np.empty_like(p)
+    z = np.zeros_like(p)
+
+    for i, pi in enumerate(p):
+        td_i = min(td[i], t[i])
+        tv_env[i] = _virtual_temp_from_dewpoint_c(t[i], pi, td_i)
+        if pi <= 0.0:
+            tv_parcel[i] = np.nan
+            continue
+        if pi >= p_lcl:
+            t_parc_k = theta_dry_k * ((pi / 1000.0) ** 0.2857142857142857)
+            t_parc = t_parc_k - 273.15
+            tv_parcel[i] = (t_parc + 273.15) * (1.0 + w_kgkg / 0.6219569100577033) / (1.0 + w_kgkg) - 273.15
+        else:
+            t_parc = _log_interp_pressure_value(pi, p_moist, moist_profile)
+            tv_parcel[i] = _virtual_temp_from_dewpoint_c(t_parc, pi, t_parc)
+
+    for i in range(1, p.size):
+        if p[i] <= 0.0 or p[i - 1] <= 0.0:
+            z[i] = z[i - 1]
+            continue
+        tv_mean = (tv_env[i - 1] + tv_env[i]) / 2.0 + 273.15
+        z[i] = z[i - 1] + (287.04749097718457 * tv_mean / 9.80665) * np.log(p[i - 1] / p[i])
+
+    last_lfc_idx = -1
+    for i in range(1, p.size):
+        if not np.isfinite(tv_parcel[i]) or not np.isfinite(tv_parcel[i - 1]):
+            continue
+        buoy = tv_parcel[i] - tv_env[i]
+        buoy_prev = tv_parcel[i - 1] - tv_env[i - 1]
+        if buoy > 0.0 and buoy_prev <= 0.0:
+            last_lfc_idx = i
+
+    el_idx = -1
+    found_positive = False
+    for i in range(1, p.size):
+        if not np.isfinite(tv_parcel[i]) or not np.isfinite(tv_parcel[i - 1]):
+            continue
+        buoy = tv_parcel[i] - tv_env[i]
+        buoy_prev = tv_parcel[i - 1] - tv_env[i - 1]
+        if buoy > 0.0:
+            found_positive = True
+        if found_positive and buoy_prev > 0.0 and buoy <= 0.0:
+            el_idx = i
+
+    if last_lfc_idx < 0:
+        return 0.0, 0.0, p_lcl, p_lcl, p_lcl
+
+    buoy_prev = tv_parcel[last_lfc_idx - 1] - tv_env[last_lfc_idx - 1]
+    buoy = tv_parcel[last_lfc_idx] - tv_env[last_lfc_idx]
+    lfc_frac = -buoy_prev / (buoy - buoy_prev)
+    lfc_p = p[last_lfc_idx - 1] + lfc_frac * (p[last_lfc_idx] - p[last_lfc_idx - 1])
+
+    if el_idx >= 0:
+        buoy_prev = tv_parcel[el_idx - 1] - tv_env[el_idx - 1]
+        buoy = tv_parcel[el_idx] - tv_env[el_idx]
+        el_frac = -buoy_prev / (buoy - buoy_prev)
+        el_p = p[el_idx - 1] + el_frac * (p[el_idx] - p[el_idx - 1])
+    else:
+        el_p = p[-1]
+
+    cape = 0.0
+    cin = 0.0
+    for i in range(1, p.size):
+        if p[i] > p_start or p[i - 1] > p_start:
+            continue
+        if not np.isfinite(tv_parcel[i]) or not np.isfinite(tv_parcel[i - 1]):
+            continue
+        tv_e_lo = tv_env[i - 1] + 273.15
+        tv_e_hi = tv_env[i] + 273.15
+        tv_p_lo = tv_parcel[i - 1] + 273.15
+        tv_p_hi = tv_parcel[i] + 273.15
+        dz = z[i] - z[i - 1]
+        if abs(dz) < 1e-6 or tv_e_lo <= 0.0 or tv_e_hi <= 0.0:
+            continue
+        buoy_lo = (tv_p_lo - tv_e_lo) / tv_e_lo
+        buoy_hi = (tv_p_hi - tv_e_hi) / tv_e_hi
+        val = 9.80665 * (buoy_lo + buoy_hi) / 2.0 * dz
+        if val > 0.0:
+            cape += val
+        elif val < 0.0:
+            cin += val
+
+    return cape, cin, p_lcl, lfc_p, el_p
+
+
+def _interp_height_value(target_z, heights, values):
+    """Linear interpolation at a height target."""
+    h = np.asarray(heights, dtype=np.float64).ravel()
+    v = np.asarray(values, dtype=np.float64).ravel()
+    if h.size != v.size:
+        raise ValueError("heights and values must have the same length")
+    if target_z <= h[0]:
+        return float(v[0])
+    if target_z >= h[-1]:
+        return float(v[-1])
+    idx = np.searchsorted(h, target_z, side="left")
+    h0 = h[idx - 1]
+    h1 = h[idx]
+    frac = (target_z - h0) / (h1 - h0)
+    return float(v[idx - 1] + frac * (v[idx] - v[idx - 1]))
+
+
+def _pressure_weighted_height_average(pressure, values, heights, z_bottom, z_top):
+    """MetRust-compatible continuous average in a height layer."""
+    p = np.asarray(pressure, dtype=np.float64).ravel()
+    v = np.asarray(values, dtype=np.float64).ravel()
+    h = np.asarray(heights, dtype=np.float64).ravel()
+    layer_vals = [_interp_height_value(z_bottom, h, v)]
+    layer_p = [_interp_height_value(z_bottom, h, p)]
+    for i in range(h.size):
+        if h[i] <= z_bottom:
+            continue
+        if h[i] >= z_top:
+            break
+        layer_vals.append(float(v[i]))
+        layer_p.append(float(p[i]))
+    layer_vals.append(_interp_height_value(z_top, h, v))
+    layer_p.append(_interp_height_value(z_top, h, p))
+    layer_vals = np.asarray(layer_vals, dtype=np.float64)
+    layer_p = np.asarray(layer_p, dtype=np.float64)
+    if layer_vals.size < 2:
+        return float(layer_vals[0])
+    dp = np.diff(layer_p)
+    num = np.sum((layer_vals[1:] + layer_vals[:-1]) / 2.0 * dp)
+    den = np.sum(dp)
+    return float(num / den) if abs(den) > 1e-10 else float(layer_vals[0])
+
+
+def _height_weighted_layer_average(values, heights, z_bottom, z_top):
+    """MetRust-compatible trapezoidal height average over an interpolated layer."""
+    v = np.asarray(values, dtype=np.float64).ravel()
+    h = np.asarray(heights, dtype=np.float64).ravel()
+    layer_h = [float(z_bottom)]
+    layer_v = [_interp_height_value(z_bottom, h, v)]
+    for i in range(h.size):
+        if h[i] <= z_bottom:
+            continue
+        if h[i] >= z_top:
+            break
+        layer_h.append(float(h[i]))
+        layer_v.append(float(v[i]))
+    layer_h.append(float(z_top))
+    layer_v.append(_interp_height_value(z_top, h, v))
+    layer_h = np.asarray(layer_h, dtype=np.float64)
+    layer_v = np.asarray(layer_v, dtype=np.float64)
+    if layer_h.size < 2:
+        return float(layer_v[0])
+    dz = np.diff(layer_h)
+    num = np.sum((layer_v[1:] + layer_v[:-1]) / 2.0 * dz)
+    den = np.sum(dz)
+    return float(num / den) if abs(den) > 1e-10 else float(layer_v[0])
+
+
+def _storm_relative_helicity_numpy(u_prof, v_prof, height_prof, depth_m, storm_u, storm_v, bottom_m=None):
+    """MetRust-compatible storm-relative helicity integration."""
+    u = np.asarray(u_prof, dtype=np.float64).ravel()
+    v = np.asarray(v_prof, dtype=np.float64).ravel()
+    h = np.asarray(height_prof, dtype=np.float64).ravel()
+    if u.size != v.size or u.size != h.size:
+        raise ValueError("u, v, and height must have the same length")
+    if u.size < 2:
+        return 0.0, 0.0, 0.0
+
+    h_start = float(h[0]) if bottom_m is None else float(bottom_m)
+    h_end = h_start + float(depth_m)
+    heights = [h_start]
+    us = [_interp_height_value(h_start, h, u)]
+    vs = [_interp_height_value(h_start, h, v)]
+
+    for i in range(u.size):
+        if h[i] > h_start and h[i] < h_end:
+            heights.append(float(h[i]))
+            us.append(float(u[i]))
+            vs.append(float(v[i]))
+
+    heights.append(h_end)
+    us.append(_interp_height_value(h_end, h, u))
+    vs.append(_interp_height_value(h_end, h, v))
+
+    pos_srh = 0.0
+    neg_srh = 0.0
+    for i in range(len(heights) - 1):
+        sru_i = us[i] - float(storm_u)
+        srv_i = vs[i] - float(storm_v)
+        sru_ip1 = us[i + 1] - float(storm_u)
+        srv_ip1 = vs[i + 1] - float(storm_v)
+        contrib = (sru_ip1 * srv_i) - (sru_i * srv_ip1)
+        if contrib > 0.0:
+            pos_srh += contrib
+        else:
+            neg_srh += contrib
+
+    return pos_srh, neg_srh, pos_srh + neg_srh
+
+
 def _STUB_parcel_profile_with_lcl(p, t, td):
     """Parcel profile with LCL inserted -- inline fallback."""
-    prof = _k_parcel_profile(p, t, td)
-    lcl_p, lcl_t = _k_lcl(float(p[0]), t, td)
-    return prof, (lcl_p, lcl_t)
+    p_np = cp.asnumpy(p).astype(np.float64, copy=False)
+    if p_np.size == 0:
+        empty = cp.empty(0, dtype=cp.float64)
+        return empty, empty
+
+    p_aug, t_aug = _parcel_profile_with_lcl_numpy(p_np, float(t), float(td))
+    return cp.asarray(p_aug), cp.asarray(t_aug)
 
 
 def _STUB_get_mixed_layer_parcel(p, t, td, d):
     """Mixed layer parcel -- inline fallback."""
-    ml_t, ml_td = _k_mixed_layer(p, t, td, d)
-    return (p[0], ml_t, ml_td)
+    p_np = cp.asnumpy(p).astype(np.float64, copy=False)
+    t_np = cp.asnumpy(t).astype(np.float64, copy=False)
+    td_np = cp.asnumpy(td).astype(np.float64, copy=False)
+
+    sfc_p = float(p_np[0])
+    top_p = sfc_p - float(d)
+
+    theta_sfc = (t_np[0] + 273.15) * (1000.0 / sfc_p) ** 0.2857142857142857
+    td_sfc = float(td_np[0])
+
+    t_top = _log_interp_pressure_value(top_p, p_np, t_np)
+    td_top = _log_interp_pressure_value(top_p, p_np, td_np)
+    theta_top = (t_top + 273.15) * (1000.0 / top_p) ** 0.2857142857142857
+
+    sum_theta = theta_sfc + theta_top
+    sum_p = sfc_p + top_p
+    sum_td = td_sfc + td_top
+    count = 2.0
+
+    for i in range(1, p_np.size):
+        pi = p_np[i]
+        if pi <= top_p:
+            break
+        theta_i = (t_np[i] + 273.15) * (1000.0 / pi) ** 0.2857142857142857
+        sum_theta += 2.0 * theta_i
+        sum_p += 2.0 * pi
+        sum_td += 2.0 * td_np[i]
+        count += 2.0
+
+    avg_theta = sum_theta / count
+    avg_p = sum_p / count
+    avg_td = sum_td / count
+
+    avg_t = avg_theta * (sfc_p / 1000.0) ** 0.2857142857142857 - 273.15
+    avg_w = _sharppy_mixratio_gkg(avg_p, avg_td)
+    parcel_td = _sharppy_temp_at_mixrat(avg_w, sfc_p)
+
+    return (
+        cp.asarray(sfc_p, dtype=cp.float64),
+        cp.asarray(avg_t, dtype=cp.float64),
+        cp.asarray(parcel_td, dtype=cp.float64),
+    )
 
 
 def _STUB_get_most_unstable_parcel(p, t, td, d):
@@ -219,10 +1131,10 @@ def _STUB_get_most_unstable_parcel(p, t, td, d):
 
 def _STUB_vector_derivative(u_arr, v_arr, dx_val, dy_val):
     """All four partial derivatives of a 2-D vector field."""
-    dudx = _k_first_derivative_x(u_arr, dx_val)
-    dudy = _k_first_derivative_y(u_arr, dy_val)
-    dvdx = _k_first_derivative_x(v_arr, dx_val)
-    dvdy = _k_first_derivative_y(v_arr, dy_val)
+    dudx = _gpu_first_derivative_uniform_2d(u_arr, dx_val, axis=1)
+    dudy = _gpu_first_derivative_uniform_2d(u_arr, dy_val, axis=0)
+    dvdx = _gpu_first_derivative_uniform_2d(v_arr, dx_val, axis=1)
+    dvdy = _gpu_first_derivative_uniform_2d(v_arr, dy_val, axis=0)
     return (dudx, dudy, dvdx, dvdy)
 
 
@@ -235,18 +1147,22 @@ def _STUB_absolute_momentum(u_arr, lat_arr, yd):
     """Absolute momentum -- u + f*y."""
     import cupy as cp
     f = 2.0 * 7.2921159e-5 * cp.sin(cp.deg2rad(lat_arr))
-    return u_arr + f * yd
+    return u_arr - f * yd
 
 
 def _STUB_cross_section_components(u_arr, v_arr, slat, slon, elat, elon):
     """Decompose (u,v) into parallel/perpendicular components."""
     import math
-    dlat = elat - slat
-    dlon = elon - slon
-    mag = math.sqrt(dlat**2 + dlon**2)
+    to_rad = math.pi / 180.0
+    dlat = (elat - slat) * to_rad
+    dlon = (elon - slon) * to_rad
+    mean_lat = ((slat + elat) / 2.0) * to_rad
+    de = dlon * math.cos(mean_lat)
+    dn = dlat
+    mag = math.sqrt(de**2 + dn**2)
     if mag < 1e-12:
         return u_arr * 0.0, v_arr * 0.0
-    tx, ty = dlon / mag, dlat / mag
+    tx, ty = de / mag, dn / mag
     parallel = u_arr * tx + v_arr * ty
     perpendicular = -u_arr * ty + v_arr * tx
     return parallel, perpendicular
@@ -287,38 +1203,23 @@ def _STUB_geospatial_laplacian(d, lat, lon):
 
 def _STUB_first_derivative(d_arr, ds, axis):
     """First derivative along a chosen axis."""
+    if d_arr.ndim != 2:
+        raise NotImplementedError("first_derivative currently expects 2-D input")
+    # MetRust axis convention: axis=0 -> x/columns, axis=1 -> y/rows.
     if axis == 0:
-        return _k_first_derivative_y(d_arr, ds)
-    else:
-        return _k_first_derivative_x(d_arr, ds)
+        return _gpu_first_derivative_uniform_2d(d_arr, ds, axis=1)
+    return _gpu_first_derivative_uniform_2d(d_arr, ds, axis=0)
 
 
 def _STUB_second_derivative(d_arr, ds, axis):
     """Second derivative along a chosen axis."""
+    if d_arr.ndim != 2:
+        raise NotImplementedError("second_derivative currently expects 2-D input")
     if axis == 0:
-        return _k_second_derivative_y(d_arr, ds)
-    else:
-        return _k_second_derivative_x(d_arr, ds)
+        return _gpu_second_derivative_uniform_2d(d_arr, ds, axis=1)
+    return _gpu_second_derivative_uniform_2d(d_arr, ds, axis=0)
 
 
-def _STUB_compute_cape_cin(*args, **kwargs):
-    """Grid CAPE/CIN -- not yet in kernels."""
-    raise NotImplementedError("compute_cape_cin grid kernel not yet available")
-
-
-def _STUB_compute_srh(*args, **kwargs):
-    """Grid SRH -- not yet in kernels."""
-    raise NotImplementedError("compute_srh grid kernel not yet available")
-
-
-def _STUB_compute_shear(*args, **kwargs):
-    """Grid shear -- not yet in kernels."""
-    raise NotImplementedError("compute_shear grid kernel not yet available")
-
-
-def _STUB_compute_pw(*args, **kwargs):
-    """Grid PW -- not yet in kernels."""
-    raise NotImplementedError("compute_pw grid kernel not yet available")
 
 
 def _STUB_compute_grid_scp(mc, s, sh, ci):
@@ -333,16 +1234,16 @@ def _STUB_compute_grid_scp(mc, s, sh, ci):
 def _STUB_compute_grid_critical_angle(us, vs, ush, vsh):
     """Critical angle between two vectors on a 2D grid."""
     import cupy as cp
-    dot = us * ush + vs * vsh
-    mag1 = cp.sqrt(us**2 + vs**2)
+    inflow_u = -us
+    inflow_v = -vs
+    dot = inflow_u * ush + inflow_v * vsh
+    mag1 = cp.sqrt(inflow_u**2 + inflow_v**2)
     mag2 = cp.sqrt(ush**2 + vsh**2)
-    cos_angle = dot / (mag1 * mag2 + 1e-12)
-    return cp.rad2deg(cp.arccos(cp.clip(cos_angle, -1.0, 1.0)))
+    cos_angle = cp.clip(dot / (mag1 * mag2 + 1e-12), -1.0, 1.0)
+    angle = cp.rad2deg(cp.arccos(cos_angle))
+    return cp.where((mag1 < 0.01) | (mag2 < 0.01), cp.nan, angle)
 
 
-def _STUB_composite_refl_hydro(*args, **kwargs):
-    """Composite reflectivity from hydrometeors -- not yet in kernels."""
-    raise NotImplementedError("composite_reflectivity_from_hydrometeors not yet available")
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +1264,47 @@ def _to_cpu(arr):
     if isinstance(arr, cp.ndarray):
         return cp.asnumpy(arr)
     return np.asarray(arr)
+
+
+def _to_metrust_input(value):
+    """Convert GPU-backed inputs to CPU arrays before calling metrust."""
+    if isinstance(value, tuple):
+        return tuple(_to_metrust_input(v) for v in value)
+    if isinstance(value, list):
+        return [_to_metrust_input(v) for v in value]
+    if isinstance(value, cp.ndarray):
+        return cp.asnumpy(value)
+    return value
+
+
+def _from_metrust_result(value):
+    """Convert metrust outputs to met-cu style GPU arrays."""
+    if isinstance(value, tuple):
+        return tuple(_from_metrust_result(v) for v in value)
+    if isinstance(value, list):
+        return [_from_metrust_result(v) for v in value]
+    if hasattr(value, "magnitude"):
+        value = value.magnitude
+    if isinstance(value, cp.ndarray):
+        return value
+    if isinstance(value, np.ndarray):
+        return cp.asarray(value, dtype=cp.float64)
+    if np.isscalar(value):
+        return float(value)
+    return value
+
+
+def _metrust_gpu_fallback(function_name, *args, **kwargs):
+    """Call the metrust reference implementation and move results back to GPU."""
+    try:
+        import metrust.calc as _mr
+    except ImportError as exc:
+        raise NotImplementedError(f"{function_name} requires metrust") from exc
+    result = getattr(_mr, function_name)(
+        *[_to_metrust_input(arg) for arg in args],
+        **{key: _to_metrust_input(val) for key, val in kwargs.items()},
+    )
+    return _from_metrust_result(result)
 
 
 def _scalar(arr):
@@ -394,6 +1336,56 @@ def _mean_spacing(val):
     else:
         arr = cp.asarray(val, dtype=cp.float64)
     return float(arr.mean()) if arr.ndim > 0 and arr.size > 1 else float(arr)
+
+
+def _gpu_first_derivative_uniform_2d(arr, spacing, axis):
+    """Second-order uniform-grid first derivative with one-sided edges."""
+    a = cp.asarray(arr, dtype=cp.float64)
+    ds = float(spacing)
+    out = cp.empty_like(a)
+    if axis == 1:
+        if a.shape[1] < 2:
+            out.fill(0.0)
+            return out
+        if a.shape[1] == 2:
+            out[:] = (a[:, 1:2] - a[:, 0:1]) / ds
+            return out
+        out[:, 1:-1] = (a[:, 2:] - a[:, :-2]) / (2.0 * ds)
+        out[:, 0] = (-3.0 * a[:, 0] + 4.0 * a[:, 1] - a[:, 2]) / (2.0 * ds)
+        out[:, -1] = (3.0 * a[:, -1] - 4.0 * a[:, -2] + a[:, -3]) / (2.0 * ds)
+        return out
+    if a.shape[0] < 2:
+        out.fill(0.0)
+        return out
+    if a.shape[0] == 2:
+        out[:] = (a[1:2, :] - a[0:1, :]) / ds
+        return out
+    out[1:-1, :] = (a[2:, :] - a[:-2, :]) / (2.0 * ds)
+    out[0, :] = (-3.0 * a[0, :] + 4.0 * a[1, :] - a[2, :]) / (2.0 * ds)
+    out[-1, :] = (3.0 * a[-1, :] - 4.0 * a[-2, :] + a[-3, :]) / (2.0 * ds)
+    return out
+
+
+def _gpu_second_derivative_uniform_2d(arr, spacing, axis):
+    """Second-order uniform-grid second derivative with one-sided edges."""
+    a = cp.asarray(arr, dtype=cp.float64)
+    ds2 = float(spacing) ** 2
+    out = cp.empty_like(a)
+    if axis == 1:
+        if a.shape[1] < 3:
+            out.fill(0.0)
+            return out
+        out[:, 1:-1] = (a[:, 2:] - 2.0 * a[:, 1:-1] + a[:, :-2]) / ds2
+        out[:, 0] = (a[:, 2] - 2.0 * a[:, 1] + a[:, 0]) / ds2
+        out[:, -1] = (a[:, -1] - 2.0 * a[:, -2] + a[:, -3]) / ds2
+        return out
+    if a.shape[0] < 3:
+        out.fill(0.0)
+        return out
+    out[1:-1, :] = (a[2:, :] - 2.0 * a[1:-1, :] + a[:-2, :]) / ds2
+    out[0, :] = (a[2, :] - 2.0 * a[1, :] + a[0, :]) / ds2
+    out[-1, :] = (a[-1, :] - 2.0 * a[-2, :] + a[-3, :]) / ds2
+    return out
 
 
 # ===========================================================================
@@ -599,19 +1591,28 @@ def mixing_ratio(partial_press_or_pressure, total_press_or_temperature,
     # Otherwise compute from (vapor_pressure, total_pressure)
     b_mean = float(b.mean()) if b.size > 0 else 0.0
     if abs(b_mean) < 200.0:
-        # Likely (pressure, temperature) form
-        return _k_saturation_mixing_ratio(a, b)
+        # Likely (pressure, temperature) form. Match metrust's SHARPpy/Wexler
+        # saturation mixing ratio path rather than the Ambaum sat-mixing kernel.
+        x = 0.02 * (b - 12.5 + (7500.0 / a))
+        enhancement = 1.0 + (0.0000045 * a) + (0.0014 * x * x)
+        pol = b * (1.1112018e-17 + (b * -3.0994571e-20))
+        pol = b * (2.1874425e-13 + (b * (-1.789232e-15 + pol)))
+        pol = b * (4.3884180e-09 + (b * (-2.988388e-11 + pol)))
+        pol = b * (7.8736169e-05 + (b * (-6.111796e-07 + pol)))
+        pol = 0.99999683 + (b * (-9.082695e-03 + pol))
+        vapor_pressure_hpa = enhancement * (6.1078 / (pol ** 8))
+        return 621.97 * (vapor_pressure_hpa / (a - vapor_pressure_hpa)) / 1000.0
     return _k_mixing_ratio(a, b)
 
 
-def density(pressure, temperature, mixing_ratio_val):
+def density(pressure, temperature, mixing_ratio):
     """Air density from pressure, temperature, and mixing ratio.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    mixing_ratio_val : array-like (g/kg)
+    mixing_ratio : array-like (g/kg)
 
     Returns
     -------
@@ -619,7 +1620,7 @@ def density(pressure, temperature, mixing_ratio_val):
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    w = _to_gpu(mixing_ratio_val) / 1000.0  # g/kg -> kg/kg (kernel expects kg/kg)
+    w = _to_gpu(mixing_ratio) / 1000.0  # g/kg -> kg/kg (kernel expects kg/kg)
     return _k_density(p, t, w)
 
 
@@ -742,14 +1743,14 @@ def moist_static_energy(height, temperature, specific_humidity):
     return _k_moist_static_energy(h, t, q)
 
 
-def parcel_profile(pressure, temperature, dewpoint_val):
+def parcel_profile(pressure, temperature, dewpoint):
     """Parcel temperature profile.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : float (Celsius)
-    dewpoint_val : float (Celsius)
+    dewpoint : float (Celsius)
 
     Returns
     -------
@@ -757,7 +1758,7 @@ def parcel_profile(pressure, temperature, dewpoint_val):
     """
     p = _1d(pressure)
     t = _scalar(temperature)
-    td = _scalar(dewpoint_val)
+    td = _scalar(dewpoint)
     return _k_parcel_profile(p, t, td)
 
 
@@ -835,14 +1836,14 @@ def virtual_potential_temperature(pressure, temperature, mixing_ratio_val):
     return _k_virtual_potential_temperature(p, t, w)
 
 
-def wet_bulb_potential_temperature(pressure, temperature, dewpoint_val):
+def wet_bulb_potential_temperature(pressure, temperature, dewpoint):
     """Wet-bulb potential temperature.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
@@ -850,7 +1851,7 @@ def wet_bulb_potential_temperature(pressure, temperature, dewpoint_val):
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    td = _to_gpu(dewpoint_val)
+    td = _to_gpu(dewpoint)
     return _k_wet_bulb_potential_temperature(p, t, td)
 
 
@@ -871,39 +1872,39 @@ def saturation_equivalent_potential_temperature(pressure, temperature):
     return _k_saturation_equivalent_potential_temperature(p, t)
 
 
-def vapor_pressure(pressure_or_dewpoint, mixing_ratio_val=None,
+def vapor_pressure(pressure_or_dewpoint, mixing_ratio=None,
                    molecular_weight_ratio=0.6219569100577033):
     """Vapor pressure from dewpoint or from pressure and mixing ratio.
 
     Parameters
     ----------
     pressure_or_dewpoint : array-like
-    mixing_ratio_val : array-like, optional
+    mixing_ratio : array-like, optional
 
     Returns
     -------
     cupy.ndarray (Pa)
     """
-    if mixing_ratio_val is not None:
-        p = _to_gpu(pressure_or_dewpoint)
-        w = _to_gpu(mixing_ratio_val)
+    if mixing_ratio is not None:
+        p = _to_gpu(_as_magnitude_in_units(pressure_or_dewpoint, "Pa"))
+        w = _to_gpu(_as_magnitude_in_units(mixing_ratio, "kg/kg"))
         return p * w / (molecular_weight_ratio + w)
-    td = _to_gpu(pressure_or_dewpoint)
+    td = _to_gpu(_as_magnitude_in_units(pressure_or_dewpoint, "degC"))
     return _k_vapor_pressure(td) * 100.0  # hPa -> Pa
 
 
-def specific_humidity_from_mixing_ratio(mixing_ratio_val):
+def specific_humidity_from_mixing_ratio(mixing_ratio):
     """Specific humidity from mixing ratio.
 
     Parameters
     ----------
-    mixing_ratio_val : array-like (kg/kg)
+    mixing_ratio : array-like (kg/kg)
 
     Returns
     -------
     cupy.ndarray (kg/kg)
     """
-    w = _to_gpu(mixing_ratio_val)
+    w = _to_gpu(mixing_ratio)
     return _k_specific_humidity_from_mixing_ratio(w)
 
 
@@ -1119,9 +2120,11 @@ def relative_humidity_wet_psychrometric(temperature, wet_bulb, pressure):
     t = _to_gpu(temperature)
     tw = _to_gpu(wet_bulb)
     p = _to_gpu(pressure)
-    e = _k_psychrometric_vapor_pressure(t, tw, p)
-    es = _k_saturation_vapor_pressure(t)
-    return (e / es) * 100.0
+    es_tw = _k_saturation_vapor_pressure(tw)
+    es_t = _k_saturation_vapor_pressure(t)
+    e = es_tw - (0.000799 * p * (t - tw))
+    rh = cp.where(es_t > 0.0, 100.0 * e / es_t, 0.0)
+    return cp.clip(rh, 0.0, 100.0)
 
 
 def psychrometric_vapor_pressure(temperature, wet_bulb, pressure):
@@ -1183,7 +2186,7 @@ def add_pressure_to_height(height, delta_pressure):
 
 
 def thickness_hydrostatic(pressure_or_bottom, temperature_or_top, t_mean=None,
-                          mixing_ratio_val=None,
+                          mixing_ratio=None,
                           molecular_weight_ratio=0.6219569100577033,
                           bottom=None, depth=None):
     """Hypsometric thickness.
@@ -1203,8 +2206,8 @@ def thickness_hydrostatic(pressure_or_bottom, temperature_or_top, t_mean=None,
     # Profile form
     p = _1d(pressure_or_bottom)
     t = _1d(temperature_or_top)
-    if mixing_ratio_val is not None:
-        w = _1d(mixing_ratio_val)
+    if mixing_ratio is not None:
+        w = _1d(mixing_ratio)
         eps = molecular_weight_ratio
         t = t * (1.0 + w / eps) / (1.0 + w)
     if float(p[0]) < float(p[-1]):
@@ -1329,7 +2332,8 @@ def pressure_to_height_std(pressure):
     cupy.ndarray (m)
     """
     p = _to_gpu(pressure)
-    return _k_pressure_to_height_std(p)
+    baro_exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065)
+    return (288.0 / 0.0065) * (1.0 - (p / 1013.25) ** (1.0 / baro_exp))
 
 
 def height_to_pressure_std(height):
@@ -1344,7 +2348,8 @@ def height_to_pressure_std(height):
     cupy.ndarray (hPa)
     """
     h = _to_gpu(height)
-    return _k_height_to_pressure_std(h)
+    baro_exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065)
+    return 1013.25 * (1.0 - 0.0065 * h / 288.0) ** baro_exp
 
 
 def altimeter_to_station_pressure(altimeter, elevation):
@@ -1361,7 +2366,9 @@ def altimeter_to_station_pressure(altimeter, elevation):
     """
     a = _to_gpu(altimeter)
     e = _to_gpu(elevation)
-    return _k_altimeter_to_station_pressure(a, e)
+    baro_exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065)
+    n = 1.0 / baro_exp
+    return (a ** n - 1013.25 ** n * 0.0065 * e / 288.0) ** (1.0 / n) + 0.3
 
 
 def station_to_altimeter_pressure(station_pressure, elevation):
@@ -1378,7 +2385,9 @@ def station_to_altimeter_pressure(station_pressure, elevation):
     """
     s = _to_gpu(station_pressure)
     e = _to_gpu(elevation)
-    return _k_station_to_altimeter_pressure(s, e)
+    baro_exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065)
+    n = 1.0 / baro_exp
+    return ((s - 0.3) ** n + 1013.25 ** n * 0.0065 * e / 288.0) ** (1.0 / n)
 
 
 def altimeter_to_sea_level_pressure(altimeter, elevation, temperature):
@@ -1397,7 +2406,9 @@ def altimeter_to_sea_level_pressure(altimeter, elevation, temperature):
     a = _to_gpu(altimeter)
     e = _to_gpu(elevation)
     t = _to_gpu(temperature)
-    return _k_altimeter_to_sea_level_pressure(a, e, t)
+    p_stn = altimeter_to_station_pressure(a, e)
+    t_mean_k = t + 273.15 + 0.5 * 0.0065 * e
+    return p_stn * cp.exp(9.80665 * e / (287.058 * t_mean_k))
 
 
 def sigma_to_pressure(sigma, psfc, ptop):
@@ -1416,7 +2427,7 @@ def sigma_to_pressure(sigma, psfc, ptop):
     s = _to_gpu(sigma)
     ps = _to_gpu(psfc)
     pt = _to_gpu(ptop)
-    return _k_sigma_to_pressure(s, ps, pt)
+    return s * (ps - pt) + pt
 
 
 def heat_index(temperature, relative_humidity):
@@ -1476,7 +2487,7 @@ def apparent_temperature(temperature, relative_humidity, wind_speed_val):
 # Sounding / profile functions
 # ===========================================================================
 
-def lfc(pressure, temperature, dewpoint_val, parcel_temperature_profile=None,
+def lfc(pressure, temperature, dewpoint, parcel_temperature_profile=None,
         dewpoint_start=None, which="top"):
     """Level of Free Convection.
 
@@ -1484,20 +2495,42 @@ def lfc(pressure, temperature, dewpoint_val, parcel_temperature_profile=None,
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
     tuple of (cupy.ndarray, cupy.ndarray)
         LFC pressure (hPa) and parcel temperature at the LFC (Celsius).
     """
-    p = _1d(pressure)
-    t = _1d(temperature)
-    td = _1d(dewpoint_val)
-    return _k_lfc(p, t, td)
+    p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
+    t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
+    td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
+    if p.size == 0:
+        nan = cp.asarray([np.nan], dtype=cp.float64)
+        return nan, nan
+
+    p_lcl, _, parcel_tv = _lift_parcel_profile_virtual_temperature_numpy(p, t, td)
+
+    for i in range(1, len(p)):
+        if p[i] > p_lcl:
+            continue
+        tv_env_prev = _virtual_temp_from_dewpoint_c(t[i - 1], p[i - 1], td[i - 1])
+        tv_env = _virtual_temp_from_dewpoint_c(t[i], p[i], td[i])
+        buoy_prev = parcel_tv[i - 1] - tv_env_prev
+        buoy = parcel_tv[i] - tv_env
+        if buoy_prev <= 0.0 and buoy > 0.0:
+            frac = (0.0 - buoy_prev) / (buoy - buoy_prev)
+            p_lfc = p[i - 1] + frac * (p[i] - p[i - 1])
+            t_lfc = t[i - 1] + frac * (t[i] - t[i - 1])
+            return cp.asarray([p_lfc], dtype=cp.float64), cp.asarray([t_lfc], dtype=cp.float64)
+        if buoy > 0.0 and p[i] <= p_lcl and p[i - 1] > p_lcl:
+            return cp.asarray([p[i]], dtype=cp.float64), cp.asarray([t[i]], dtype=cp.float64)
+
+    nan = cp.asarray([np.nan], dtype=cp.float64)
+    return nan, nan
 
 
-def el(pressure, temperature, dewpoint_val, parcel_temperature_profile=None,
+def el(pressure, temperature, dewpoint, parcel_temperature_profile=None,
        which="top"):
     """Equilibrium Level.
 
@@ -1505,27 +2538,58 @@ def el(pressure, temperature, dewpoint_val, parcel_temperature_profile=None,
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
     tuple of (cupy.ndarray, cupy.ndarray)
         EL pressure (hPa) and parcel temperature at the EL (Celsius).
     """
-    p = _1d(pressure)
-    t = _1d(temperature)
-    td = _1d(dewpoint_val)
-    return _k_el(p, t, td)
+    p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
+    t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
+    td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
+    if p.size == 0:
+        nan = cp.asarray([np.nan], dtype=cp.float64)
+        return nan, nan
+
+    p_lcl, _, parcel_tv = _lift_parcel_profile_virtual_temperature_numpy(p, t, td)
+    found_positive = False
+    crossings = []
+
+    for i in range(1, len(p)):
+        if p[i] > p_lcl:
+            continue
+        tv_env_prev = _virtual_temp_from_dewpoint_c(t[i - 1], p[i - 1], td[i - 1])
+        tv_env = _virtual_temp_from_dewpoint_c(t[i], p[i], td[i])
+        buoy_prev = parcel_tv[i - 1] - tv_env_prev
+        buoy = parcel_tv[i] - tv_env
+
+        if buoy > 0.0:
+            found_positive = True
+
+        if found_positive and buoy_prev > 0.0 and buoy <= 0.0:
+            frac = (0.0 - buoy_prev) / (buoy - buoy_prev)
+            p_el = p[i - 1] + frac * (p[i] - p[i - 1])
+            t_el = t[i - 1] + frac * (t[i] - t[i - 1])
+            crossings.append((p_el, t_el))
+
+    if not crossings:
+        nan = cp.asarray([np.nan], dtype=cp.float64)
+        return nan, nan
+
+    which_key = str(which).lower()
+    p_el, t_el = crossings[0] if which_key == "bottom" else crossings[-1]
+    return cp.asarray([p_el], dtype=cp.float64), cp.asarray([t_el], dtype=cp.float64)
 
 
-def lcl(pressure, temperature, dewpoint_val):
+def lcl(pressure, temperature, dewpoint):
     """Lifting Condensation Level.
 
     Parameters
     ----------
     pressure : float (hPa)
     temperature : float (Celsius)
-    dewpoint_val : float (Celsius)
+    dewpoint : float (Celsius)
 
     Returns
     -------
@@ -1534,11 +2598,11 @@ def lcl(pressure, temperature, dewpoint_val):
     """
     p = _scalar(pressure)
     t = _scalar(temperature)
-    td = _scalar(dewpoint_val)
+    td = _scalar(dewpoint)
     return _k_lcl(p, t, td)
 
 
-def cape_cin(pressure, temperature, dewpoint_val, parcel_profile_or_height=None,
+def cape_cin(pressure, temperature, dewpoint, parcel_profile_or_height=None,
              *args, parcel_profile=None, which_lfc="bottom", which_el="top",
              parcel_type="sb", ml_depth=100.0, mu_depth=300.0, top_m=None,
              **kwargs):
@@ -1548,7 +2612,7 @@ def cape_cin(pressure, temperature, dewpoint_val, parcel_profile_or_height=None,
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
     parcel_profile_or_height : array-like, optional
     parcel_type : str
     ml_depth : float
@@ -1560,21 +2624,70 @@ def cape_cin(pressure, temperature, dewpoint_val, parcel_profile_or_height=None,
     tuple of cupy.ndarray
         CAPE (J/kg), CIN (J/kg), LCL_p, LFC_p, EL_p.
     """
-    p = _1d(pressure)
-    t = _1d(temperature)
-    td = _1d(dewpoint_val)
-    result = _k_cape_cin(p, t, td)
-    return result
+    psfc = kwargs.pop("psfc", None)
+    t2m = kwargs.pop("t2m", None)
+    td2m = kwargs.pop("td2m", None)
+    if kwargs:
+        raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+    if parcel_profile is not None:
+        parcel_profile_or_height = parcel_profile
+    if len(args) >= 3:
+        psfc, t2m, td2m = args[:3]
+
+    p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
+    t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
+    td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
+
+    fourth = parcel_profile_or_height
+    metpy_profile_form = False
+    if fourth is not None:
+        fourth_arr = np.asarray(strip_units(fourth), dtype=np.float64)
+        if parcel_profile is not None or (fourth_arr.size == p.size and np.nanmax(np.abs(fourth_arr)) < 150.0):
+            metpy_profile_form = True
+
+    if metpy_profile_form:
+        t_parcel = np.asarray(strip_units(fourth), dtype=np.float64).ravel()
+        cape_val, cin_val = _parcel_profile_cape_cin_numpy(p, t, td, t_parcel)
+        return cp.asarray([cape_val], dtype=cp.float64), cp.asarray([cin_val], dtype=cp.float64)
+
+    if fourth is not None:
+        h = np.asarray(strip_units(fourth), dtype=np.float64).ravel()
+    else:
+        h = _standard_agl_heights_from_pressure(p)
+        if psfc is None:
+            psfc = pressure[0] if hasattr(pressure, "__getitem__") else pressure
+        if t2m is None:
+            t2m = temperature[0] if hasattr(temperature, "__getitem__") else temperature
+        if td2m is None:
+            td2m = dewpoint[0] if hasattr(dewpoint, "__getitem__") else dewpoint
+
+    ps = _scalar(psfc if psfc is not None else p[0])
+    t2 = _scalar(t2m if t2m is not None else t[0])
+    td2 = _scalar(td2m if td2m is not None else td[0])
+    cape_val, cin_val, h_lcl, h_lfc = _cape_cin_core_compatible(
+        p, t, td, h, ps, t2, td2,
+        parcel_type=parcel_type,
+        ml_depth=float(ml_depth),
+        mu_depth=float(mu_depth),
+        top_m=top_m,
+    )
+    return (
+        cp.asarray([cape_val], dtype=cp.float64),
+        cp.asarray([cin_val], dtype=cp.float64),
+        cp.asarray([h_lcl], dtype=cp.float64),
+        cp.asarray([h_lfc], dtype=cp.float64),
+    )
 
 
-def surface_based_cape_cin(pressure, temperature, dewpoint_val):
+def surface_based_cape_cin(pressure, temperature, dewpoint):
     """Surface-based CAPE and CIN.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
@@ -1583,21 +2696,29 @@ def surface_based_cape_cin(pressure, temperature, dewpoint_val):
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
-    result = _k_cape_cin(p, t, td)
-    if isinstance(result, tuple) and len(result) > 2:
-        return result[0], result[1]  # CAPE, CIN only
-    return result
+    td = _1d(dewpoint)
+    p_np = cp.asnumpy(p).astype(np.float64, copy=False)
+    t_np = cp.asnumpy(t).astype(np.float64, copy=False)
+    td_np = cp.asnumpy(td).astype(np.float64, copy=False)
+    cape, cin, _, _, _ = _cape_cin_from_parcel_state(
+        p_np,
+        t_np,
+        td_np,
+        float(p_np[0]),
+        float(t_np[0]),
+        float(td_np[0]),
+    )
+    return cp.asarray([cape], dtype=cp.float64), cp.asarray([cin], dtype=cp.float64)
 
 
-def mixed_layer_cape_cin(pressure, temperature, dewpoint_val, depth=100.0):
+def mixed_layer_cape_cin(pressure, temperature, dewpoint, depth=100.0):
     """Mixed-layer CAPE and CIN.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
     depth : float (hPa)
 
     Returns
@@ -1607,29 +2728,31 @@ def mixed_layer_cape_cin(pressure, temperature, dewpoint_val, depth=100.0):
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     d = _scalar(depth)
-    # Get mixed-layer parcel
-    ml_t, ml_td = _k_mixed_layer(p, t, td, d)
-    # Create modified profiles with ML parcel at surface
-    t_ml = t.copy()
-    td_ml = td.copy()
-    t_ml[0] = ml_t
-    td_ml[0] = ml_td
-    result = _k_cape_cin(p, t_ml, td_ml)
-    if isinstance(result, tuple) and len(result) > 2:
-        return result[0], result[1]
-    return result
+    parcel_p, parcel_t, parcel_td = get_mixed_layer_parcel(p, t, td, d)
+    p_np = cp.asnumpy(p).astype(np.float64, copy=False)
+    t_np = cp.asnumpy(t).astype(np.float64, copy=False)
+    td_np = cp.asnumpy(td).astype(np.float64, copy=False)
+    cape, cin, _, _, _ = _cape_cin_from_parcel_state(
+        p_np,
+        t_np,
+        td_np,
+        float(cp.asnumpy(cp.asarray(parcel_p))),
+        float(cp.asnumpy(cp.asarray(parcel_t))),
+        float(cp.asnumpy(cp.asarray(parcel_td))),
+    )
+    return cp.asarray([cape], dtype=cp.float64), cp.asarray([cin], dtype=cp.float64)
 
 
-def most_unstable_cape_cin(pressure, temperature, dewpoint_val, depth=300, **kwargs):
+def most_unstable_cape_cin(pressure, temperature, dewpoint, depth=300, **kwargs):
     """Most-unstable CAPE and CIN.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
     depth : float (hPa)
 
     Returns
@@ -1639,29 +2762,31 @@ def most_unstable_cape_cin(pressure, temperature, dewpoint_val, depth=300, **kwa
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     d = _scalar(depth)
-    # Find most unstable parcel
     mu_p, mu_t, mu_td, mu_idx = _STUB_get_most_unstable_parcel(p, t, td, d)
-    # Create modified profiles starting from MU parcel
-    t_mu = t.copy()
-    td_mu = td.copy()
-    t_mu[0] = float(mu_t) if hasattr(mu_t, '__float__') else mu_t
-    td_mu[0] = float(mu_td) if hasattr(mu_td, '__float__') else mu_td
-    result = _k_cape_cin(p, t_mu, td_mu)
-    if isinstance(result, tuple) and len(result) > 2:
-        return result[0], result[1]
-    return result
+    p_np = cp.asnumpy(p).astype(np.float64, copy=False)
+    t_np = cp.asnumpy(t).astype(np.float64, copy=False)
+    td_np = cp.asnumpy(td).astype(np.float64, copy=False)
+    cape, cin, _, _, _ = _cape_cin_from_parcel_state(
+        p_np,
+        t_np,
+        td_np,
+        float(cp.asnumpy(cp.asarray(mu_p))),
+        float(cp.asnumpy(cp.asarray(mu_t))),
+        float(cp.asnumpy(cp.asarray(mu_td))),
+    )
+    return cp.asarray([cape], dtype=cp.float64), cp.asarray([cin], dtype=cp.float64)
 
 
-def downdraft_cape(pressure, temperature, dewpoint_val):
+def downdraft_cape(pressure, temperature, dewpoint):
     """Downdraft CAPE (DCAPE).
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
@@ -1669,27 +2794,33 @@ def downdraft_cape(pressure, temperature, dewpoint_val):
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     return _k_downdraft_cape(p, t, td)
 
 
-def showalter_index(pressure, temperature, dewpoint_val):
+def showalter_index(pressure, temperature, dewpoint):
     """Showalter Index.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
     cupy.ndarray (delta_degC)
     """
-    p = _1d(pressure)
-    t = _1d(temperature)
-    td = _1d(dewpoint_val)
-    return _k_showalter_index(p, t, td)
+    p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
+    t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
+    td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
+    t850 = _log_interp_pressure_value(850.0, p, t)
+    td850 = _log_interp_pressure_value(850.0, p, td)
+    t500_env = _log_interp_pressure_value(500.0, p, t)
+    p_lcl, t_lcl = _drylift_cpu(850.0, t850, td850)
+    thetam = _thetam_from_lcl(p_lcl, t_lcl)
+    t500_parcel = _satlift_c(500.0, thetam)
+    return t500_env - t500_parcel
 
 
 def k_index(*args, vertical_dim=0):
@@ -1723,6 +2854,9 @@ def total_totals(*args, vertical_dim=0):
         t850, td850, t500 = [_to_gpu(a) for a in args]
         return _k_total_totals(t850, t500, td850)
     raise TypeError("total_totals expects (t850, td850, t500)")
+
+
+total_totals_index = total_totals
 
 
 def cross_totals(*args, vertical_dim=0):
@@ -1769,14 +2903,14 @@ def sweat_index(t850, td850, t500, dd850, dd500, ff850, ff500):
     )
 
 
-def lifted_index(pressure, temperature, dewpoint_val):
+def lifted_index(pressure, temperature, dewpoint):
     """Lifted Index.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
@@ -1784,18 +2918,18 @@ def lifted_index(pressure, temperature, dewpoint_val):
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     return _k_lifted_index(p, t, td)
 
 
-def ccl(pressure, temperature, dewpoint_val):
+def ccl(pressure, temperature, dewpoint):
     """Convective Condensation Level.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
@@ -1803,24 +2937,24 @@ def ccl(pressure, temperature, dewpoint_val):
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     return _k_ccl(p, t, td)
 
 
-def precipitable_water(pressure, dewpoint_val):
+def precipitable_water(pressure, dewpoint):
     """Precipitable water.
 
     Parameters
     ----------
     pressure : array-like (hPa)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
     cupy.ndarray (mm)
     """
     p = _1d(pressure)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     return _k_precipitable_water(p, td)
 
 
@@ -1930,22 +3064,24 @@ def get_layer(pressure, *args, p_bottom=None, p_top=None,
     tuple of cupy.ndarray
     """
     p = _1d(pressure)
+    p_np = cp.asnumpy(p).astype(np.float64, copy=False)
     value_arrays = [_1d(a) for a in args]
-    pb = _scalar(p_bottom) if p_bottom is not None else (_scalar(bottom) if bottom is not None else float(cp.asnumpy(p[0])))
+    pb = _scalar(p_bottom) if p_bottom is not None else (_scalar(bottom) if bottom is not None else float(p_np[0]))
     if p_top is not None:
         pt = _scalar(p_top)
     elif depth is not None:
         pt = pb - _scalar(depth)
     else:
         raise TypeError("get_layer requires either p_top or depth")
-    # Call kernel for each value array separately
+
     results = []
     p_layer = None
     for v_arr in value_arrays:
-        p_l, v_l = _k_get_layer(p, v_arr, pb, pt)
+        v_np = cp.asnumpy(v_arr).astype(np.float64, copy=False)
+        p_l, v_l = _extract_layer_1d(p_np, v_np, pb, pt, interpolate=interpolate)
         if p_layer is None:
-            p_layer = p_l
-        results.append(v_l)
+            p_layer = cp.asarray(p_l, dtype=cp.float64)
+        results.append(cp.asarray(v_l, dtype=cp.float64))
     if p_layer is None:
         p_layer = p
     if len(results) == 1:
@@ -1967,16 +3103,7 @@ def get_layer_heights(pressure, heights, p_bottom, p_top):
     -------
     tuple of (float, float, float) -- (p_layer, h_bottom, h_top)
     """
-    p = _1d(pressure)
-    h = _1d(heights)
-    pb = _scalar(p_bottom)
-    pt = _scalar(p_top)
-    # Interpolate heights at pressure boundaries (1D case)
-    p_np = cp.asnumpy(p)
-    h_np = cp.asnumpy(h)
-    h_bot = float(np.interp(pb, p_np[::-1], h_np[::-1])) if pb >= float(p_np[-1]) else float(h_np[0])
-    h_top = float(np.interp(pt, p_np[::-1], h_np[::-1])) if pt >= float(p_np[-1]) else float(h_np[-1])
-    return h_bot, h_top, h_top - h_bot
+    return get_layer(pressure, heights, p_bottom=p_bottom, p_top=p_top, interpolate=True)
 
 
 def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
@@ -2007,23 +3134,21 @@ def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
     raise TypeError("mixed_layer requires at least one profile argument")
 
 
-def mean_pressure_weighted(pressure, values, p_bottom=None, p_top=None):
+def mean_pressure_weighted(pressure, values):
     """Pressure-weighted mean of a quantity.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     values : array-like
-    p_bottom, p_top : float, optional
-
     Returns
     -------
     float
     """
     p = _1d(pressure)
     v = _1d(values)
-    pb = _scalar(p_bottom) if p_bottom is not None else float(cp.asnumpy(p[0]))
-    pt = _scalar(p_top) if p_top is not None else float(cp.asnumpy(p[-1]))
+    pb = float(cp.asnumpy(p[0]))
+    pt = float(cp.asnumpy(p[-1]))
     # 1D case: pressure-weighted average using trapezoidal rule
     p_np = cp.asnumpy(p)
     v_np = cp.asnumpy(v)
@@ -2037,14 +3162,14 @@ def mean_pressure_weighted(pressure, values, p_bottom=None, p_top=None):
     return float(np.sum(avg_v * dp) / np.sum(dp))
 
 
-def get_mixed_layer_parcel(pressure, temperature, dewpoint_val, depth=100.0):
+def get_mixed_layer_parcel(pressure, temperature, dewpoint, depth=100.0):
     """Get mixed-layer parcel properties.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
     depth : float (hPa)
 
     Returns
@@ -2054,12 +3179,12 @@ def get_mixed_layer_parcel(pressure, temperature, dewpoint_val, depth=100.0):
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     d = _scalar(depth)
     return _STUB_get_mixed_layer_parcel(p, t, td, d)
 
 
-def get_most_unstable_parcel(pressure, temperature, dewpoint_val,
+def get_most_unstable_parcel(pressure, temperature, dewpoint,
                              height=None, bottom=None, depth=300.0):
     """Get most-unstable parcel properties.
 
@@ -2067,7 +3192,7 @@ def get_most_unstable_parcel(pressure, temperature, dewpoint_val,
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
     depth : float (hPa)
 
     Returns
@@ -2077,12 +3202,12 @@ def get_most_unstable_parcel(pressure, temperature, dewpoint_val,
     """
     p = _1d(pressure)
     t = _1d(temperature)
-    td = _1d(dewpoint_val)
+    td = _1d(dewpoint)
     d = _scalar(depth)
     return _STUB_get_most_unstable_parcel(p, t, td, d)
 
 
-def mixed_parcel(pressure, temperature, dewpoint_val, parcel_start_pressure=None,
+def mixed_parcel(pressure, temperature, dewpoint, parcel_start_pressure=None,
                  height=None, bottom=None, depth=100, interpolate=True):
     """Mixed-layer parcel (MetPy-compatible alias).
 
@@ -2091,13 +3216,13 @@ def mixed_parcel(pressure, temperature, dewpoint_val, parcel_start_pressure=None
     tuple of (cupy.ndarray, cupy.ndarray, cupy.ndarray)
     """
     d = _scalar(depth)
-    return get_mixed_layer_parcel(pressure, temperature, dewpoint_val, d)
+    return get_mixed_layer_parcel(pressure, temperature, dewpoint, d)
 
 
-def most_unstable_parcel(pressure, temperature, dewpoint_val, height=None,
+def most_unstable_parcel(pressure, temperature, dewpoint, height=None,
                          bottom=None, depth=300):
     """Alias for get_most_unstable_parcel."""
-    return get_most_unstable_parcel(pressure, temperature, dewpoint_val,
+    return get_most_unstable_parcel(pressure, temperature, dewpoint,
                                     height=height, bottom=bottom, depth=depth)
 
 
@@ -2192,23 +3317,38 @@ def find_intersections(x, y1, y2):
         return result
 
 
-def convective_inhibition_depth(pressure, temperature, dewpoint_val):
+def convective_inhibition_depth(pressure, temperature, dewpoint):
     """Convective inhibition depth.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
     cupy.ndarray (hPa)
     """
-    p = _1d(pressure)
-    t = _1d(temperature)
-    td = _1d(dewpoint_val)
-    return _k_convective_inhibition_depth(p, t, td)
+    p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
+    t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
+    td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
+    if len(p) == 0:
+        return 0.0
+    p_sfc = p[0]
+    t_sfc = t[0]
+    td_sfc = td[0]
+    p_lcl, t_lcl = _drylift_cpu(p_sfc, t_sfc, td_sfc)
+    thetam = _thetam_from_lcl(p_lcl, t_lcl)
+    for k in range(len(p)):
+        if p[k] > p_lcl:
+            continue
+        tv_env = _virtual_temp_from_dewpoint_c(t[k], p[k], td[k])
+        t_parcel = _satlift_c(p[k], thetam)
+        tv_parcel = _virtual_temp_from_dewpoint_c(t_parcel, p[k], t_parcel)
+        if tv_parcel > tv_env:
+            return float(p_sfc - p[k])
+    return float(p_sfc - p[-1])
 
 
 # ===========================================================================
@@ -2318,7 +3458,13 @@ def mean_wind(u, v, height, bottom, top):
     h_arr = _1d(height)
     bot = _scalar(bottom)
     top_val = _scalar(top)
-    return _k_mean_wind(u_arr, v_arr, h_arr, bot, top_val)
+    u_np = cp.asnumpy(u_arr).astype(np.float64, copy=False)
+    v_np = cp.asnumpy(v_arr).astype(np.float64, copy=False)
+    h_np = cp.asnumpy(h_arr).astype(np.float64, copy=False)
+    return (
+        _height_weighted_layer_average(u_np, h_np, bot, top_val),
+        _height_weighted_layer_average(v_np, h_np, bot, top_val),
+    )
 
 
 def storm_relative_helicity(*args, bottom=None, depth=None,
@@ -2352,9 +3498,28 @@ def storm_relative_helicity(*args, bottom=None, depth=None,
     v_arr = _1d(v)
     h_arr = _1d(height_a)
     d = _scalar(depth_a)
-    su = _scalar(storm_u) if storm_u is not None else None
-    sv = _scalar(storm_v) if storm_v is not None else None
-    return _k_storm_relative_helicity(u_arr, v_arr, h_arr, d, su, sv)
+    if storm_u is None or storm_v is None:
+        (rm_u, rm_v), _, _ = bunkers_storm_motion(u_arr, v_arr, h_arr)
+        if storm_u is None:
+            storm_u = rm_u
+        if storm_v is None:
+            storm_v = rm_v
+    su = _scalar(storm_u)
+    sv = _scalar(storm_v)
+    pos, neg, total = _storm_relative_helicity_numpy(
+        cp.asnumpy(u_arr).astype(np.float64, copy=False),
+        cp.asnumpy(v_arr).astype(np.float64, copy=False),
+        cp.asnumpy(h_arr).astype(np.float64, copy=False),
+        d,
+        su,
+        sv,
+        bottom_m=_scalar(bottom) if bottom is not None else None,
+    )
+    return (
+        cp.asarray([pos], dtype=cp.float64),
+        cp.asarray([neg], dtype=cp.float64),
+        cp.asarray([total], dtype=cp.float64),
+    )
 
 
 def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
@@ -2372,6 +3537,7 @@ def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
     tuple of 3 tuples, each (cupy.ndarray, cupy.ndarray)
     """
     if height is not None:
+        p = _1d(pressure_or_u)
         u = _1d(u_or_v)
         v = _1d(v_or_height)
         h = _1d(height)
@@ -2379,7 +3545,33 @@ def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
         u = _1d(pressure_or_u)
         v = _1d(u_or_v)
         h = _1d(v_or_height)
-    return _k_bunkers_storm_motion(u, v, h)
+        p = height_to_pressure_std(h)
+
+    p_np = cp.asnumpy(p).astype(np.float64, copy=False)
+    u_np = cp.asnumpy(u).astype(np.float64, copy=False)
+    v_np = cp.asnumpy(v).astype(np.float64, copy=False)
+    h_np = cp.asnumpy(h).astype(np.float64, copy=False)
+
+    z_sfc = float(h_np[0])
+    mean_u = _pressure_weighted_height_average(p_np, u_np, h_np, z_sfc, z_sfc + 6000.0)
+    mean_v = _pressure_weighted_height_average(p_np, v_np, h_np, z_sfc, z_sfc + 6000.0)
+    u_500 = _pressure_weighted_height_average(p_np, u_np, h_np, z_sfc, z_sfc + 500.0)
+    v_500 = _pressure_weighted_height_average(p_np, v_np, h_np, z_sfc, z_sfc + 500.0)
+    u_5500 = _pressure_weighted_height_average(p_np, u_np, h_np, z_sfc + 5500.0, z_sfc + 6000.0)
+    v_5500 = _pressure_weighted_height_average(p_np, v_np, h_np, z_sfc + 5500.0, z_sfc + 6000.0)
+    shear_u = u_5500 - u_500
+    shear_v = v_5500 - v_500
+    shear_mag = float(np.hypot(shear_u, shear_v))
+    if shear_mag < 1e-10:
+        return (mean_u, mean_v), (mean_u, mean_v), (mean_u, mean_v)
+    perp_u = shear_v / shear_mag
+    perp_v = -shear_u / shear_mag
+    deviation = 7.5
+    return (
+        (mean_u + deviation * perp_u, mean_v + deviation * perp_v),
+        (mean_u - deviation * perp_u, mean_v - deviation * perp_v),
+        (mean_u, mean_v),
+    )
 
 
 def corfidi_storm_motion(pressure_or_u, u_or_v, v_or_height, *args,
@@ -2398,7 +3590,10 @@ def corfidi_storm_motion(pressure_or_u, u_or_v, v_or_height, *args,
     h_arr = _1d(v_or_height)
     u8 = _scalar(u_850)
     v8 = _scalar(v_850)
-    return _k_corfidi_storm_motion(u_arr, v_arr, h_arr, u8, v8)
+    mw_u, mw_v = mean_wind(u_arr, v_arr, h_arr, 0.0, 6000.0)
+    prop_u = mw_u - u8
+    prop_v = mw_v - v8
+    return (prop_u, prop_v), (mw_u + prop_u, mw_v + prop_v)
 
 
 def friction_velocity(u, w):
@@ -2491,7 +3686,9 @@ def divergence(u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_divergence(u_arr, v_arr, dx_val, dy_val)
+    dudx = _gpu_first_derivative_uniform_2d(u_arr, dx_val, axis=1)
+    dvdy = _gpu_first_derivative_uniform_2d(v_arr, dy_val, axis=0)
+    return dudx + dvdy
 
 
 def vorticity(u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
@@ -2512,7 +3709,9 @@ def vorticity(u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_vorticity(u_arr, v_arr, dx_val, dy_val)
+    dvdx = _gpu_first_derivative_uniform_2d(v_arr, dx_val, axis=1)
+    dudy = _gpu_first_derivative_uniform_2d(u_arr, dy_val, axis=0)
+    return dvdx - dudy
 
 
 def absolute_vorticity(u, v, lats=None, dx=None, dy=None, latitude=None,
@@ -2536,7 +3735,7 @@ def absolute_vorticity(u, v, lats=None, dx=None, dy=None, latitude=None,
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
     f_arr = _k_coriolis_parameter(lats_arr)
-    return _k_absolute_vorticity(u_arr, v_arr, dx_val, dy_val, f_arr)
+    return vorticity(u_arr, v_arr, dx=dx_val, dy=dy_val) + f_arr
 
 
 def advection(scalar, *args, dx=None, dy=None, dz=None, x_dim=-1, y_dim=-2,
@@ -2566,7 +3765,9 @@ def advection(scalar, *args, dx=None, dy=None, dz=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_advection(s_arr, u_arr, v_arr, dx_val, dy_val)
+    dsdx = _gpu_first_derivative_uniform_2d(s_arr, dx_val, axis=1)
+    dsdy = _gpu_first_derivative_uniform_2d(s_arr, dy_val, axis=0)
+    return -(u_arr * dsdx + v_arr * dsdy)
 
 
 def frontogenesis(theta, u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
@@ -2589,7 +3790,19 @@ def frontogenesis(theta, u, v, dx=None, dy=None, x_dim=-1, y_dim=-2,
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_frontogenesis(t_arr, u_arr, v_arr, dx_val, dy_val)
+    dtdx = _gpu_first_derivative_uniform_2d(t_arr, dx_val, axis=1)
+    dtdy = _gpu_first_derivative_uniform_2d(t_arr, dy_val, axis=0)
+    dudx = _gpu_first_derivative_uniform_2d(u_arr, dx_val, axis=1)
+    dudy = _gpu_first_derivative_uniform_2d(u_arr, dy_val, axis=0)
+    dvdx = _gpu_first_derivative_uniform_2d(v_arr, dx_val, axis=1)
+    dvdy = _gpu_first_derivative_uniform_2d(v_arr, dy_val, axis=0)
+    mag = cp.sqrt(dtdx * dtdx + dtdy * dtdy)
+    mag = cp.where(mag < 1e-30, cp.nan, mag)
+    return -(
+        dtdx * dtdx * dudx
+        + dtdy * dtdy * dvdy
+        + dtdx * dtdy * (dvdx + dudy)
+    ) / mag
 
 
 def geostrophic_wind(heights, dx=None, dy=None, latitude=None, x_dim=-1,
@@ -2612,9 +3825,14 @@ def geostrophic_wind(heights, dx=None, dy=None, latitude=None, x_dim=-1,
     f_arr = _k_coriolis_parameter(lats_arr)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    # metrust convention: input Z is geopotential height (m), formula is
-    # ug = -(g/f)*dZ/dy.  Pass standard g.
-    return _k_geostrophic_wind(h_arr, f_arr, dx_val, dy_val, g=9.80665)
+    dZdx = _gpu_first_derivative_uniform_2d(h_arr, dx_val, axis=1)
+    dZdy = _gpu_first_derivative_uniform_2d(h_arr, dy_val, axis=0)
+    safe_f = cp.where(cp.abs(f_arr) < 1e-20, cp.nan, f_arr)
+    ug = -(9.80665 / safe_f) * dZdy
+    vg = (9.80665 / safe_f) * dZdx
+    ug = cp.nan_to_num(ug)
+    vg = cp.nan_to_num(vg)
+    return ug, vg
 
 
 def ageostrophic_wind(u, v, heights, lats, dx, dy):
@@ -2637,8 +3855,8 @@ def ageostrophic_wind(u, v, heights, lats, dx, dy):
     lats_arr = _2d(lats)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    f_arr = _k_coriolis_parameter(lats_arr)
-    return _k_ageostrophic_wind(u_arr, v_arr, h_arr, f_arr, dx_val, dy_val)
+    ug, vg = geostrophic_wind(h_arr, dx=dx_val, dy=dy_val, latitude=lats_arr)
+    return u_arr - ug, v_arr - vg
 
 
 def potential_vorticity_baroclinic(potential_temp, pressure, *args, dx=None,
@@ -2678,8 +3896,11 @@ def potential_vorticity_barotropic(heights, u, v, lats, dx, dy):
     lats_arr = _2d(lats)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_potential_vorticity_barotropic(h_arr, u_arr, v_arr, lats_arr,
-                                                 dx_val, dy_val)
+    f_arr = _k_coriolis_parameter(lats_arr)
+    zeta = vorticity(u_arr, v_arr, dx=dx_val, dy=dy_val)
+    depth = cp.where(cp.abs(h_arr) > 1e-10, h_arr, cp.nan)
+    out = (f_arr + zeta) / depth
+    return cp.nan_to_num(out)
 
 
 def normal_component(u, v, start, end):
@@ -2812,10 +4033,19 @@ def curvature_vorticity(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_curvature_vorticity(u_arr, v_arr, dx_val, dy_val)
+    uc = u_arr
+    vc = v_arr
+    spd2 = uc * uc + vc * vc
+    dudx = _gpu_first_derivative_uniform_2d(u_arr, dx_val, axis=1)
+    dudy = _gpu_first_derivative_uniform_2d(u_arr, dy_val, axis=0)
+    dvdx = _gpu_first_derivative_uniform_2d(v_arr, dx_val, axis=1)
+    dvdy = _gpu_first_derivative_uniform_2d(v_arr, dy_val, axis=0)
+    out = (uc * uc * dvdx - vc * vc * dudy + uc * vc * (dvdy - dudx)) / spd2
+    out = cp.where(spd2 < 1e-20, 0.0, out)
+    return out
 
 
-def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy, latitude=None):
+def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy):
     """Inertial-advective wind.
 
     Parameters
@@ -2823,23 +4053,22 @@ def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy, latitude=None):
     u, v : 2-D array-like (m/s) -- actual wind (not used in kernel)
     u_geo, v_geo : 2-D array-like (m/s) -- geostrophic wind
     dx, dy : float (m)
-    latitude : 2-D array-like (degrees), optional
 
     Returns
     -------
     tuple of (cupy.ndarray, cupy.ndarray) (m/s)
     """
+    u_arr = _2d(u)
+    v_arr = _2d(v)
     ug = _2d(u_geo)
     vg = _2d(v_geo)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    # Kernel requires Coriolis parameter f; estimate from mid-latitude if not given
-    if latitude is not None:
-        f_arr = _k_coriolis_parameter(_2d(latitude))
-    else:
-        # Default to ~45 degrees latitude Coriolis
-        f_arr = cp.full_like(ug, 2.0 * 7.2921159e-5 * np.sin(np.deg2rad(45.0)))
-    return _k_inertial_advective_wind(ug, vg, f_arr, dx_val, dy_val)
+    dugdx = _gpu_first_derivative_uniform_2d(ug, dx_val, axis=1)
+    dugdy = _gpu_first_derivative_uniform_2d(ug, dy_val, axis=0)
+    dvgdx = _gpu_first_derivative_uniform_2d(vg, dx_val, axis=1)
+    dvgdy = _gpu_first_derivative_uniform_2d(vg, dy_val, axis=0)
+    return u_arr * dugdx + v_arr * dugdy, u_arr * dvgdx + v_arr * dvgdy
 
 
 def kinematic_flux(v_component, scalar):
@@ -2879,7 +4108,16 @@ def q_vector(u, v, temperature, pressure, dx=None, dy=None, **kwargs):
     p_val = _scalar(pressure)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_q_vector(t_arr, u_arr, v_arr, p_val, dx_val, dy_val)
+    dTdx = _gpu_first_derivative_uniform_2d(t_arr, dx_val, axis=1)
+    dTdy = _gpu_first_derivative_uniform_2d(t_arr, dy_val, axis=0)
+    dudx = _gpu_first_derivative_uniform_2d(u_arr, dx_val, axis=1)
+    dudy = _gpu_first_derivative_uniform_2d(u_arr, dy_val, axis=0)
+    dvdx = _gpu_first_derivative_uniform_2d(v_arr, dx_val, axis=1)
+    dvdy = _gpu_first_derivative_uniform_2d(v_arr, dy_val, axis=0)
+    coeff = -287.04749097718457 / (p_val * 100.0)
+    q1 = coeff * (dudx * dTdx + dvdx * dTdy)
+    q2 = coeff * (dudy * dTdx + dvdy * dTdy)
+    return q1, q2
 
 
 def shear_vorticity(u, v, dx, dy):
@@ -2898,7 +4136,9 @@ def shear_vorticity(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_shear_vorticity(u_arr, v_arr, dx_val, dy_val)
+    return vorticity(u_arr, v_arr, dx=dx_val, dy=dy_val) - curvature_vorticity(
+        u_arr, v_arr, dx_val, dy_val
+    )
 
 
 def shearing_deformation(u, v, dx, dy):
@@ -2917,7 +4157,9 @@ def shearing_deformation(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_shearing_deformation(u_arr, v_arr, dx_val, dy_val)
+    dvdx = _gpu_first_derivative_uniform_2d(v_arr, dx_val, axis=1)
+    dudy = _gpu_first_derivative_uniform_2d(u_arr, dy_val, axis=0)
+    return dvdx + dudy
 
 
 def stretching_deformation(u, v, dx, dy):
@@ -2936,7 +4178,9 @@ def stretching_deformation(u, v, dx, dy):
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_stretching_deformation(u_arr, v_arr, dx_val, dy_val)
+    dudx = _gpu_first_derivative_uniform_2d(u_arr, dx_val, axis=1)
+    dvdy = _gpu_first_derivative_uniform_2d(v_arr, dy_val, axis=0)
+    return dudx - dvdy
 
 
 def total_deformation(u, v, dx, dy):
@@ -2951,11 +4195,9 @@ def total_deformation(u, v, dx, dy):
     -------
     cupy.ndarray (1/s)
     """
-    u_arr = _2d(u)
-    v_arr = _2d(v)
-    dx_val = _mean_spacing(dx)
-    dy_val = _mean_spacing(dy)
-    return _k_total_deformation(u_arr, v_arr, dx_val, dy_val)
+    stretch = stretching_deformation(u, v, dx, dy)
+    shear = shearing_deformation(u, v, dx, dy)
+    return cp.sqrt(stretch * stretch + shear * shear)
 
 
 def geospatial_gradient(data, lats, lons):
@@ -3079,6 +4321,10 @@ def supercell_composite_parameter(mucape, srh_eff, bulk_shear_eff):
     return _k_supercell_composite_parameter(cape, srh, shear)
 
 
+significant_tornado = significant_tornado_parameter
+supercell_composite = supercell_composite_parameter
+
+
 def critical_angle(*args):
     """Critical angle between storm-relative inflow and 0-500m shear.
 
@@ -3144,9 +4390,34 @@ def dendritic_growth_zone(temperature, pressure):
     -------
     tuple of (cupy.ndarray, cupy.ndarray)
     """
-    t = _1d(temperature)
-    p = _1d(pressure)
-    return _k_dendritic_growth_zone(t, p)
+    t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
+    p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
+    n = min(len(t), len(p))
+    if n < 2:
+        return float("nan"), float("nan")
+
+    p_top = np.nan
+    p_bottom = np.nan
+    for k in range(n):
+        temp = t[k]
+        if temp <= -12.0 and temp >= -18.0:
+            if np.isnan(p_bottom):
+                p_bottom = p[k]
+            p_top = p[k]
+
+    if not np.isnan(p_bottom):
+        for k in range(n - 1):
+            if ((t[k] > -12.0 and t[k + 1] <= -12.0) or (t[k] <= -12.0 and t[k + 1] > -12.0)):
+                frac = (-12.0 - t[k]) / (t[k + 1] - t[k])
+                p_bottom = p[k] + frac * (p[k + 1] - p[k])
+                break
+        for k in range(n - 1):
+            if ((t[k] > -18.0 and t[k + 1] <= -18.0) or (t[k] <= -18.0 and t[k + 1] > -18.0)):
+                frac = (-18.0 - t[k]) / (t[k + 1] - t[k])
+                p_top = p[k] + frac * (p[k + 1] - p[k])
+                break
+
+    return float(p_top), float(p_bottom)
 
 
 def fosberg_fire_weather_index(temperature, relative_humidity, wind_speed_val):
@@ -3163,9 +4434,21 @@ def fosberg_fire_weather_index(temperature, relative_humidity, wind_speed_val):
     cupy.ndarray (dimensionless)
     """
     t = _to_gpu(temperature)
-    rh = _to_gpu(relative_humidity)
+    rh = cp.clip(_to_gpu(relative_humidity), 0.0, 100.0)
     ws = _to_gpu(wind_speed_val)
-    return _k_fosberg_fire_weather_index(t, rh, ws)
+    emc = cp.where(
+        rh <= 10.0,
+        0.03229 + 0.281073 * rh - 0.000578 * rh * t,
+        cp.where(
+            rh <= 50.0,
+            2.22749 + 0.160107 * rh - 0.01478 * t,
+            21.0606 + 0.005565 * rh * rh - 0.00035 * rh * t - 0.483199 * rh,
+        ),
+    )
+    m = cp.maximum(emc / 30.0, 0.0)
+    eta = 1.0 - 2.0 * m + 1.5 * m * m - 0.5 * m * m * m
+    fw = eta * cp.sqrt(1.0 + ws * ws)
+    return cp.clip(fw * (10.0 / 3.0), 0.0, 100.0)
 
 
 def freezing_rain_composite(temperature, pressure, precip_type):
@@ -3217,7 +4500,14 @@ def hot_dry_windy(temperature, relative_humidity, wind_speed_val, vpd=0.0):
     t = _to_gpu(temperature)
     rh = _to_gpu(relative_humidity)
     ws = _to_gpu(wind_speed_val)
-    return _k_hot_dry_windy(t, rh, ws, float(vpd))
+    vpd_val = float(vpd)
+    if vpd_val > 0.0:
+        vpd_arr = cp.full_like(t, vpd_val)
+    else:
+        es = _vappres_sharppy_hpa(t)
+        ea = es * (rh / 100.0)
+        vpd_arr = cp.maximum(es - ea, 0.0)
+    return vpd_arr * ws
 
 
 def warm_nose_check(temperature, pressure):
@@ -3248,10 +4538,22 @@ def galvez_davison_index(t950, t850, t700, t500, td950, td850, td700, sst):
     -------
     cupy.ndarray (dimensionless)
     """
-    return _k_galvez_davison_index(
-        _to_gpu(t950), _to_gpu(t850), _to_gpu(t700), _to_gpu(t500),
-        _to_gpu(td950), _to_gpu(td850), _to_gpu(td700), _to_gpu(sst),
-    )
+    t950 = _to_gpu(t950)
+    t850 = _to_gpu(t850)
+    t700 = _to_gpu(t700)
+    t500 = _to_gpu(t500)
+    td950 = _to_gpu(td950)
+    td850 = _to_gpu(td850)
+    td700 = _to_gpu(td700)
+    sst = _to_gpu(sst)
+    thetae_950 = equivalent_potential_temperature(cp.full_like(t950, 950.0), t950, td950)
+    thetae_850 = equivalent_potential_temperature(cp.full_like(t850, 850.0), t850, td850)
+    thetae_700 = equivalent_potential_temperature(cp.full_like(t700, 700.0), t700, td700)
+    thetae_low = (thetae_950 + thetae_850) / 2.0
+    cbi = thetae_low - thetae_700
+    mwi = ((t500 + 273.15) - 243.15) * 1.5
+    ii = cp.maximum((sst + 273.15) - 298.15, 0.0) * 5.0
+    return cbi + ii - mwi
 
 
 # ===========================================================================
@@ -3264,17 +4566,69 @@ def compute_cape_cin(pressure_3d, temperature_c_3d, qvapor_3d,
     """CAPE/CIN for every grid point.
 
     3-D inputs: shape (nz, ny, nx).
+    pressure_3d in Pa, temperature_c_3d in Celsius,
+    qvapor_3d in kg/kg mixing ratio, height_agl_3d in m AGL,
+    psfc in Pa, t2 in K (or C), q2 in kg/kg mixing ratio.
     Returns (cape, cin, lcl_height, lfc_height) each shaped (ny, nx).
     """
+    parcel = str(parcel_type or "surface").strip().lower()
+    if parcel == "ml":
+        parcel_code = 1
+    elif parcel == "mu":
+        parcel_code = 2
+    else:
+        parcel_code = 0
+
     p3 = _to_gpu(pressure_3d)
     t3 = _to_gpu(temperature_c_3d)
     q3 = _to_gpu(qvapor_3d)
     h3 = _to_gpu(height_agl_3d)
     ps = _to_gpu(psfc)
-    t2v = _to_gpu(t2)
-    q2v = _to_gpu(q2)
-    return _STUB_compute_cape_cin(p3, t3, q3, h3, ps, t2v, q2v,
-                                   parcel_type, top_m)
+    t2_arr = _to_gpu(t2)
+    q2_arr = _to_gpu(q2)
+    top = -1.0 if top_m is None else float(top_m)
+
+    if p3.ndim == 3:
+        if float(cp.asnumpy(p3[0, 0, 0])) < float(cp.asnumpy(p3[-1, 0, 0])):
+            p3 = cp.flip(p3, axis=0)
+            t3 = cp.flip(t3, axis=0)
+            q3 = cp.flip(q3, axis=0)
+            h3 = cp.flip(h3, axis=0)
+        nz, ny, nx = p3.shape
+        ncols = ny * nx
+        p_2d = cp.ascontiguousarray(p3.reshape(nz, ncols).T)
+        t_2d = cp.ascontiguousarray(t3.reshape(nz, ncols).T)
+        q_2d = cp.ascontiguousarray(q3.reshape(nz, ncols).T)
+        h_2d = cp.ascontiguousarray(h3.reshape(nz, ncols).T)
+        ps_1d = cp.ascontiguousarray(ps.reshape(ncols))
+        t2_1d = cp.ascontiguousarray(t2_arr.reshape(ncols))
+        q2_1d = cp.ascontiguousarray(q2_arr.reshape(ncols))
+        cape, cin, lcl, lfc = _k_grid_cape_cin(
+            p_2d, t_2d, q_2d, h_2d,
+            ps_1d, t2_1d, q2_1d,
+            parcel_type_code=parcel_code,
+            top_m=top,
+        )
+        return (
+            cape.reshape(ny, nx),
+            cin.reshape(ny, nx),
+            lcl.reshape(ny, nx),
+            lfc.reshape(ny, nx),
+        )
+
+    if p3.shape[1] > 1 and float(cp.asnumpy(p3[0, 0])) < float(cp.asnumpy(p3[0, -1])):
+        p3 = cp.flip(p3, axis=1)
+        t3 = cp.flip(t3, axis=1)
+        q3 = cp.flip(q3, axis=1)
+        h3 = cp.flip(h3, axis=1)
+    return _k_grid_cape_cin(
+        p3, t3, q3, h3,
+        cp.ascontiguousarray(ps.ravel()),
+        cp.ascontiguousarray(t2_arr.ravel()),
+        cp.ascontiguousarray(q2_arr.ravel()),
+        parcel_type_code=parcel_code,
+        top_m=top,
+    )
 
 
 def compute_srh(u_3d, v_3d, height_agl_3d, top_m=1000.0):
@@ -3286,7 +4640,17 @@ def compute_srh(u_3d, v_3d, height_agl_3d, top_m=1000.0):
     u3 = _to_gpu(u_3d)
     v3 = _to_gpu(v_3d)
     h3 = _to_gpu(height_agl_3d)
-    return _STUB_compute_srh(u3, v3, h3, _scalar(top_m))
+    top = float(top_m)
+    if u3.ndim == 3:
+        nz, ny, nx = u3.shape
+        ncols = ny * nx
+        u_2d = cp.ascontiguousarray(u3.reshape(nz, ncols).T)
+        v_2d = cp.ascontiguousarray(v3.reshape(nz, ncols).T)
+        h_2d = cp.ascontiguousarray(h3.reshape(nz, ncols).T)
+        _, _, total = _k_grid_srh(u_2d, v_2d, h_2d, top)
+        return total.reshape(ny, nx)
+    _, _, total = _k_grid_srh(u3, v3, h3, top)
+    return total
 
 
 def compute_shear(u_3d, v_3d, height_agl_3d, bottom_m=0.0, top_m=6000.0):
@@ -3298,7 +4662,20 @@ def compute_shear(u_3d, v_3d, height_agl_3d, bottom_m=0.0, top_m=6000.0):
     u3 = _to_gpu(u_3d)
     v3 = _to_gpu(v_3d)
     h3 = _to_gpu(height_agl_3d)
-    return _STUB_compute_shear(u3, v3, h3, _scalar(bottom_m), _scalar(top_m))
+    bottom = float(bottom_m)
+    top = float(top_m)
+    if u3.ndim == 3:
+        nz, ny, nx = u3.shape
+        ncols = ny * nx
+        # Reshape (nz, ny, nx) -> (ncols, nz) for column kernels
+        u_2d = cp.ascontiguousarray(u3.reshape(nz, ncols).T)
+        v_2d = cp.ascontiguousarray(v3.reshape(nz, ncols).T)
+        h_2d = cp.ascontiguousarray(h3.reshape(nz, ncols).T)
+        su, sv = _k_bulk_shear(u_2d, v_2d, h_2d, bottom, top)
+        return cp.sqrt(su ** 2 + sv ** 2).reshape(ny, nx)
+    # 2-D input (ncols, nlevels)
+    su, sv = _k_bulk_shear(u3, v3, h3, bottom, top)
+    return cp.sqrt(su ** 2 + sv ** 2)
 
 
 def compute_lapse_rate(temperature_c_3d, qvapor_3d, height_agl_3d,
@@ -3330,7 +4707,15 @@ def compute_pw(qvapor_3d, pressure_3d):
     """
     q3 = _to_gpu(qvapor_3d)
     p3 = _to_gpu(pressure_3d)
-    return _STUB_compute_pw(q3, p3)
+    if q3.ndim == 3:
+        nz, ny, nx = q3.shape
+        ncols = ny * nx
+        # Reshape (nz, ny, nx) -> (ncols, nz) for column kernel
+        q_2d = cp.ascontiguousarray(q3.reshape(nz, ncols).T)
+        p_2d = cp.ascontiguousarray(p3.reshape(nz, ncols).T)
+        pw = _k_grid_precipitable_water(p_2d, q_2d)
+        return pw.reshape(ny, nx)
+    return _k_grid_precipitable_water(p3, q3)
 
 
 def compute_stp(cape, lcl_height, srh_1km, shear_6km):
@@ -3395,7 +4780,12 @@ def compute_dcp(dcape, mu_cape, shear06, mu_mixing_ratio):
     mc = _to_gpu(mu_cape)
     sh = _to_gpu(shear06)
     mr = _to_gpu(mu_mixing_ratio)
-    return _k_compute_dcp(d, mc, sh, mr)
+    return (
+        cp.maximum(d / 980.0, 0.0)
+        * cp.maximum(mc / 2000.0, 0.0)
+        * cp.maximum(sh / 20.0, 0.0)
+        * cp.maximum(mr / 11.0, 0.0)
+    )
 
 
 def compute_grid_scp(mu_cape, srh, shear_06, mu_cin):
@@ -3439,14 +4829,16 @@ def composite_reflectivity_from_hydrometeors(pressure_3d, temperature_c_3d,
     """Composite reflectivity from hydrometeor mixing ratios.
 
     All 3-D inputs: shape (nz, ny, nx).
+    pressure in Pa, temperature in C, mixing ratios in kg/kg.
     Returns composite reflectivity shaped (ny, nx) in dBZ.
     """
-    p3 = _to_gpu(pressure_3d)
-    t3 = _to_gpu(temperature_c_3d)
-    qr = _to_gpu(qrain_3d)
-    qs = _to_gpu(qsnow_3d)
-    qg = _to_gpu(qgraup_3d)
-    return _STUB_composite_refl_hydro(p3, t3, qr, qs, qg)
+    return _k_composite_reflectivity_from_hydrometeors(
+        _to_gpu(pressure_3d),
+        _to_gpu(temperature_c_3d),
+        _to_gpu(qrain_3d),
+        _to_gpu(qsnow_3d),
+        _to_gpu(qgraup_3d),
+    )
 
 
 # ===========================================================================
@@ -3587,7 +4979,7 @@ def gradient_x(data, dx):
     """
     d_arr = _2d(data)
     dx_val = _mean_spacing(dx)
-    return _k_first_derivative_x(d_arr, dx_val)
+    return _gpu_first_derivative_uniform_2d(d_arr, dx_val, axis=1)
 
 
 def gradient_y(data, dy):
@@ -3604,7 +4996,7 @@ def gradient_y(data, dy):
     """
     d_arr = _2d(data)
     dy_val = _mean_spacing(dy)
-    return _k_first_derivative_y(d_arr, dy_val)
+    return _gpu_first_derivative_uniform_2d(d_arr, dy_val, axis=0)
 
 
 def laplacian(data, dx, dy):
@@ -3622,7 +5014,10 @@ def laplacian(data, dx, dy):
     d_arr = _2d(data)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
-    return _k_laplacian(d_arr, dx_val, dy_val)
+    return (
+        _gpu_second_derivative_uniform_2d(d_arr, dx_val, axis=1)
+        + _gpu_second_derivative_uniform_2d(d_arr, dy_val, axis=0)
+    )
 
 
 def first_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
@@ -3932,14 +5327,14 @@ def azimuth_range_to_lat_lon(azimuths, ranges, center_lat, center_lon):
 # xarray Dataset wrappers (CPU-side, use GPU for computation)
 # ===========================================================================
 
-def parcel_profile_with_lcl_as_dataset(pressure, temperature, dewpoint_val):
+def parcel_profile_with_lcl_as_dataset(pressure, temperature, dewpoint):
     """Calculate parcel profile and return as xarray Dataset with LCL inserted.
 
     Parameters
     ----------
     pressure : array-like (hPa)
     temperature : array-like (Celsius)
-    dewpoint_val : array-like (Celsius)
+    dewpoint : array-like (Celsius)
 
     Returns
     -------
@@ -3947,10 +5342,10 @@ def parcel_profile_with_lcl_as_dataset(pressure, temperature, dewpoint_val):
     """
     try:
         from metrust.calc import parcel_profile_with_lcl_as_dataset as _fn
-        return _fn(pressure, temperature, dewpoint_val)
+        return _fn(pressure, temperature, dewpoint)
     except ImportError:
         import xarray as xr
-        p_out, t_parcel = parcel_profile_with_lcl(pressure, temperature, dewpoint_val)
+        p_out, t_parcel = parcel_profile_with_lcl(pressure, temperature, dewpoint)
         p_cpu = to_cpu(p_out)
         t_cpu = to_cpu(t_parcel)
         return xr.Dataset(
@@ -4275,6 +5670,7 @@ __all__ = [
     "showalter_index",
     "k_index",
     "total_totals",
+    "total_totals_index",
     "downdraft_cape",
     "cross_totals",
     "vertical_totals",
@@ -4384,7 +5780,9 @@ __all__ = [
     "geospatial_laplacian",
     # severe
     "significant_tornado_parameter",
+    "significant_tornado",
     "supercell_composite_parameter",
+    "supercell_composite",
     "critical_angle",
     "boyden_index",
     "bulk_richardson_number",
@@ -4467,4 +5865,6 @@ __all__ = [
     "cross_section",
     "interpolate_to_slice",
     "geodesic",
+    "units",
+    "xr",
 ]

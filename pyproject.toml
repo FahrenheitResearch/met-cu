@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "met-cu"
-version = "0.1.0"
+version = "0.2.0"
 description = "Custom CUDA kernels for every meteorological calculation. GPU-accelerated MetPy/metrust."
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -15,8 +15,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+plot = [
+    "matplotlib>=3.10",
+    "cartopy>=0.25",
+    "Pillow>=10.0",
+]
 cpu = ["metrust>=0.3.8"]
-test = ["metrust>=0.3.8", "pytest"]
+test = [
+    "metrust>=0.3.8",
+    "pytest",
+    "matplotlib>=3.10",
+    "cartopy>=0.25",
+    "Pillow>=10.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["python"]

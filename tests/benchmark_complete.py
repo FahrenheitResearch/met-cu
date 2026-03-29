@@ -42,6 +42,7 @@ np.random.seed(42)
 NY, NX = 1059, 1799  # HRRR scale
 NLEVELS = 40
 N = NY * NX
+STD_SAMPLE = 2000
 
 # 2D flat arrays for per-element thermo/wind ops
 p_sfc = np.full(N, 1000.0, dtype=np.float64)
@@ -96,6 +97,36 @@ z1000, z850v, z700v, z500v = 100.0, 1500.0, 3000.0, 5500.0
 NZ_3D = 10
 NY_3D, NX_3D = 50, 80
 refl_3d = np.random.rand(NZ_3D, NY_3D, NX_3D).astype(np.float64) * 60 - 10
+pressure_3d = np.broadcast_to(
+    np.linspace(100000.0, 20000.0, NZ_3D)[:, None, None],
+    (NZ_3D, NY_3D, NX_3D),
+).copy()
+temperature_3d = np.broadcast_to(
+    np.linspace(28.0, -32.0, NZ_3D)[:, None, None],
+    (NZ_3D, NY_3D, NX_3D),
+).copy()
+qvapor_3d = np.broadcast_to(
+    np.linspace(0.014, 0.001, NZ_3D)[:, None, None],
+    (NZ_3D, NY_3D, NX_3D),
+).copy()
+height_agl_3d = np.broadcast_to(
+    np.linspace(0.0, 12000.0, NZ_3D)[:, None, None],
+    (NZ_3D, NY_3D, NX_3D),
+).copy()
+u_3d = np.broadcast_to(
+    np.linspace(5.0, 35.0, NZ_3D)[:, None, None],
+    (NZ_3D, NY_3D, NX_3D),
+).copy()
+v_3d = np.broadcast_to(
+    np.linspace(0.0, 20.0, NZ_3D)[:, None, None],
+    (NZ_3D, NY_3D, NX_3D),
+).copy()
+psfc_2d = np.full((NY_3D, NX_3D), 100000.0, dtype=np.float64)
+t2_2d = np.full((NY_3D, NX_3D), 301.15, dtype=np.float64)
+q2_2d = np.full((NY_3D, NX_3D), 0.014, dtype=np.float64)
+qrain_3d = np.clip(np.random.rand(NZ_3D, NY_3D, NX_3D) * 0.001, 0.0, None)
+qsnow_3d = np.clip(np.random.rand(NZ_3D, NY_3D, NX_3D) * 0.0005, 0.0, None)
+qgraup_3d = np.clip(np.random.rand(NZ_3D, NY_3D, NX_3D) * 0.0005, 0.0, None)
 
 # ==========================================================================
 # Result tracking
@@ -106,12 +137,26 @@ CATEGORY_STATS = {}
 def _extract(val):
     """Extract a numpy array from any result type."""
     if isinstance(val, tuple):
-        val = val[0]
+        parts = [_extract(v).ravel() for v in val]
+        if not parts:
+            return np.asarray([], dtype=np.float64)
+        return np.concatenate(parts)
     if hasattr(val, "magnitude"):
         return np.asarray(val.magnitude, dtype=np.float64)
     if hasattr(val, "get"):  # cupy
         return val.get().astype(np.float64)
     return np.asarray(val, dtype=np.float64)
+
+
+def _vectorize_scalar_call(func, *args):
+    """Evaluate a scalar reference function over array inputs."""
+    arrays = [np.asarray(arg) for arg in args]
+    shape = arrays[0].shape
+    flat = [arr.ravel() for arr in arrays]
+    out = np.empty(flat[0].size, dtype=np.float64)
+    for i in range(out.size):
+        out[i] = float(func(*[arr[i] for arr in flat]))
+    return out.reshape(shape)
 
 
 def test_func(name, gpu_call, cpu_call, verify=True, category="misc"):
@@ -338,13 +383,19 @@ test_func("dry_lapse",
     category=cat)
 
 test_func("height_to_pressure_std",
-    lambda: mc.height_to_pressure_std(z_2d),
-    lambda: mr.height_to_pressure_std(z_2d * units.m),
+    lambda: mc.height_to_pressure_std(z_2d[:STD_SAMPLE]),
+    lambda: _vectorize_scalar_call(
+        lambda z: mr.height_to_pressure_std(float(z) * units.m).magnitude,
+        z_2d[:STD_SAMPLE],
+    ),
     category=cat)
 
 test_func("pressure_to_height_std",
-    lambda: mc.pressure_to_height_std(p_sfc),
-    lambda: mr.pressure_to_height_std(p_sfc * units.hPa),
+    lambda: mc.pressure_to_height_std(p_sfc[:STD_SAMPLE]),
+    lambda: _vectorize_scalar_call(
+        lambda p: mr.pressure_to_height_std(float(p) * units.hPa).magnitude,
+        p_sfc[:STD_SAMPLE],
+    ),
     category=cat)
 
 test_func("add_height_to_pressure",
@@ -358,23 +409,42 @@ test_func("add_pressure_to_height",
     category=cat)
 
 test_func("altimeter_to_station_pressure",
-    lambda: mc.altimeter_to_station_pressure(p_sfc + 13, z_2d),
-    lambda: mr.altimeter_to_station_pressure((p_sfc + 13) * units.hPa, z_2d * units.m),
+    lambda: mc.altimeter_to_station_pressure((p_sfc + 13)[:STD_SAMPLE], z_2d[:STD_SAMPLE]),
+    lambda: _vectorize_scalar_call(
+        lambda a, z: mr.altimeter_to_station_pressure(float(a) * units.hPa, float(z) * units.m).magnitude,
+        (p_sfc + 13)[:STD_SAMPLE],
+        z_2d[:STD_SAMPLE],
+    ),
     category=cat)
 
 test_func("station_to_altimeter_pressure",
-    lambda: mc.station_to_altimeter_pressure(p_sfc, z_2d),
-    lambda: mr.station_to_altimeter_pressure(p_sfc * units.hPa, z_2d * units.m),
+    lambda: mc.station_to_altimeter_pressure(p_sfc[:STD_SAMPLE], z_2d[:STD_SAMPLE]),
+    lambda: _vectorize_scalar_call(
+        lambda p, z: mr.station_to_altimeter_pressure(float(p) * units.hPa, float(z) * units.m).magnitude,
+        p_sfc[:STD_SAMPLE],
+        z_2d[:STD_SAMPLE],
+    ),
     category=cat)
 
 test_func("altimeter_to_sea_level_pressure",
-    lambda: mc.altimeter_to_sea_level_pressure(p_sfc + 13, z_2d, t_2d),
-    lambda: mr.altimeter_to_sea_level_pressure((p_sfc + 13) * units.hPa, z_2d * units.m, t_2d * units.degC),
+    lambda: mc.altimeter_to_sea_level_pressure((p_sfc + 13)[:STD_SAMPLE], z_2d[:STD_SAMPLE], t_2d[:STD_SAMPLE]),
+    lambda: _vectorize_scalar_call(
+        lambda a, z, t: mr.altimeter_to_sea_level_pressure(
+            float(a) * units.hPa, float(z) * units.m, float(t) * units.degC
+        ).magnitude,
+        (p_sfc + 13)[:STD_SAMPLE],
+        z_2d[:STD_SAMPLE],
+        t_2d[:STD_SAMPLE],
+    ),
     category=cat)
 
 test_func("sigma_to_pressure",
-    lambda: mc.sigma_to_pressure(sigma_2d, p_sfc, np.full(N, 50.0)),
-    lambda: mr.sigma_to_pressure(sigma_2d, p_sfc * units.hPa, 50.0 * units.hPa),
+    lambda: mc.sigma_to_pressure(sigma_2d[:STD_SAMPLE], p_sfc[:STD_SAMPLE], np.full(STD_SAMPLE, 50.0)),
+    lambda: _vectorize_scalar_call(
+        lambda s, p: mr.sigma_to_pressure(float(s), float(p) * units.hPa, 50.0 * units.hPa).magnitude,
+        sigma_2d[:STD_SAMPLE],
+        p_sfc[:STD_SAMPLE],
+    ),
     category=cat)
 
 test_func("geopotential_to_height",
@@ -550,8 +620,8 @@ test_func("total_deformation",
     category=cat)
 
 test_func("advection",
-    lambda: mc.advection(t_grid, u_grid, v_grid, dx=dx_scalar, dy=dy_scalar),
-    lambda: mr.advection(t_grid * units.degC, u_grid * units("m/s"), v_grid * units("m/s"), dx=dx_scalar * units.m, dy=dy_scalar * units.m),
+    lambda: mc.advection(t_grid + 273.15, u_grid, v_grid, dx=dx_scalar, dy=dy_scalar),
+    lambda: mr.advection((t_grid + 273.15) * units.K, u_grid * units("m/s"), v_grid * units("m/s"), dx=dx_scalar * units.m, dy=dy_scalar * units.m),
     category=cat)
 
 test_func("frontogenesis",
@@ -576,27 +646,27 @@ test_func("ageostrophic_wind",
 
 test_func("gradient_x",
     lambda: mc.gradient_x(t_grid, dx_scalar),
-    lambda: mr.first_derivative(t_grid * units.degC, delta=dx_scalar * units.m, axis=1),
+    lambda: mr.gradient_x((t_grid + 273.15) * units.K, dx_scalar * units.m),
     category=cat)
 
 test_func("gradient_y",
     lambda: mc.gradient_y(t_grid, dy_scalar),
-    lambda: mr.first_derivative(t_grid * units.degC, delta=dy_scalar * units.m, axis=0),
+    lambda: mr.gradient_y((t_grid + 273.15) * units.K, dy_scalar * units.m),
     category=cat)
 
 test_func("laplacian",
     lambda: mc.laplacian(t_grid, dx_scalar, dy_scalar),
-    lambda: mr.laplacian(t_grid * units.degC, dx=dx_scalar * units.m, dy=dy_scalar * units.m),
+    lambda: mr.laplacian((t_grid + 273.15) * units.K, dx=dx_scalar * units.m, dy=dy_scalar * units.m),
     category=cat)
 
 test_func("first_derivative (axis=0)",
     lambda: mc.first_derivative(t_grid, dy_scalar, axis=0),
-    lambda: mr.first_derivative(t_grid * units.degC, delta=dy_scalar * units.m, axis=0),
+    lambda: mr.first_derivative((t_grid + 273.15) * units.K, delta=dy_scalar * units.m, axis=0),
     category=cat)
 
 test_func("second_derivative (axis=0)",
     lambda: mc.second_derivative(t_grid, dy_scalar, axis=0),
-    lambda: mr.second_derivative(t_grid * units.degC, delta=dy_scalar * units.m, axis=0),
+    lambda: mr.second_derivative((t_grid + 273.15) * units.K, delta=dy_scalar * units.m, axis=0),
     category=cat)
 
 test_func("smooth_gaussian",
@@ -652,6 +722,37 @@ test_func("vector_derivative",
 test_func("composite_reflectivity",
     lambda: mc.composite_reflectivity(refl_3d),
     lambda: mr.composite_reflectivity(refl_3d),
+    category=cat)
+
+test_func("compute_cape_cin",
+    lambda: mc.compute_cape_cin(
+        pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+        psfc_2d, t2_2d, q2_2d),
+    lambda: mr.compute_cape_cin(
+        pressure_3d, temperature_3d, qvapor_3d, height_agl_3d,
+        psfc_2d, t2_2d, q2_2d),
+    category=cat)
+
+test_func("compute_srh",
+    lambda: mc.compute_srh(u_3d, v_3d, height_agl_3d, top_m=1000.0),
+    lambda: mr.compute_srh(u_3d, v_3d, height_agl_3d, top_m=1000.0),
+    category=cat)
+
+test_func("compute_shear",
+    lambda: mc.compute_shear(u_3d, v_3d, height_agl_3d, bottom_m=0.0, top_m=6000.0),
+    lambda: mr.compute_shear(u_3d, v_3d, height_agl_3d, bottom_m=0.0, top_m=6000.0),
+    category=cat)
+
+test_func("compute_pw",
+    lambda: mc.compute_pw(qvapor_3d, pressure_3d),
+    lambda: mr.compute_pw(qvapor_3d, pressure_3d),
+    category=cat)
+
+test_func("composite_reflectivity_from_hydrometeors",
+    lambda: mc.composite_reflectivity_from_hydrometeors(
+        pressure_3d, temperature_3d, qrain_3d, qsnow_3d, qgraup_3d),
+    lambda: mr.composite_reflectivity_from_hydrometeors(
+        pressure_3d, temperature_3d, qrain_3d, qsnow_3d, qgraup_3d),
     category=cat)
 
 test_func("lat_lon_grid_deltas",
@@ -1115,11 +1216,6 @@ skip_func("smooth_window", reason="Generic kernel convolution -- tested via smoo
 skip_func("to_cpu", reason="Data transfer utility")
 skip_func("to_gpu", reason="Data transfer utility")
 skip_func("strip_units", reason="Unit utility")
-skip_func("compute_cape_cin", reason="Not yet implemented (3D grid)")
-skip_func("compute_srh", reason="Not yet implemented (3D grid)")
-skip_func("compute_shear", reason="Not yet implemented (3D grid)")
-skip_func("compute_pw", reason="Not yet implemented (3D grid)")
-skip_func("composite_reflectivity_from_hydrometeors", reason="Not yet implemented")
 skip_func("potential_vorticity_baroclinic", reason="Complex 3D input signature")
 skip_func("significant_tornado", reason="Alias for significant_tornado_parameter")
 

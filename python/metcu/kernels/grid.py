@@ -1828,3 +1828,102 @@ def get_layer_heights(heights, pressure, p_bottom, p_top):
                                           h_bottom, h_top,
                                           np.int32(nz), np.int32(ny), np.int32(nx_)))
     return h_bottom, h_top
+
+
+# ---------------------------------------------------------------------------
+# Composite reflectivity from hydrometeor mixing ratios
+# Smith (1984) / Koch et al. (2005) / Thompson microphysics formulation
+# ---------------------------------------------------------------------------
+
+_composite_reflectivity_hydro_code = r'''
+extern "C" __global__
+void composite_reflectivity_hydro_kernel(
+    const double* pressure_3d,
+    const double* temperature_3d,
+    const double* qrain_3d,
+    const double* qsnow_3d,
+    const double* qgraup_3d,
+    double* refl_out,
+    int nz, int ny, int nx
+) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    int j = blockDim.y * blockIdx.y + threadIdx.y;
+    if (i >= nx || j >= ny) return;
+
+    int col = j * nx + i;
+    double max_dbz = -999.0;
+
+    for (int k = 0; k < nz; k++) {
+        int idx = k * ny * nx + col;
+        double p = pressure_3d[idx];
+        double t_c = temperature_3d[idx];
+        double t_k = t_c + 273.15;
+        double rho = p / (287.05 * t_k);
+
+        double qr = qrain_3d[idx];
+        double qs = qsnow_3d[idx];
+        double qg = qgraup_3d[idx];
+        if (qr < 0.0) qr = 0.0;
+        if (qs < 0.0) qs = 0.0;
+        if (qg < 0.0) qg = 0.0;
+
+        double rho_qr = rho * qr;
+        double rho_qs = rho * qs;
+        double rho_qg = rho * qg;
+
+        double z_rain = 3.63e9 * pow(rho_qr, 1.75);
+        double z_snow = 9.80e8 * pow(rho_qs, 1.75);
+        double z_graup = 4.33e9 * pow(rho_qg, 1.75);
+
+        double z_total = z_rain + z_snow + z_graup;
+        double dbz = (z_total > 1e-6) ? 10.0 * log10(z_total) : -30.0;
+
+        if (dbz > max_dbz) max_dbz = dbz;
+    }
+
+    refl_out[col] = max_dbz;
+}
+'''
+_composite_reflectivity_hydro_kern = cp.RawKernel(
+    _composite_reflectivity_hydro_code, 'composite_reflectivity_hydro_kernel'
+)
+
+
+def composite_reflectivity_from_hydrometeors(
+    pressure_3d, temperature_c_3d, qrain_3d, qsnow_3d, qgraup_3d
+):
+    """Composite reflectivity from hydrometeor mixing ratios.
+
+    Uses the Koch et al. (2005) / Thompson microphysics reflectivity
+    formulation (Smith 1984 framework) to compute equivalent reflectivity
+    factor from rain, snow, and graupel mixing ratios, then takes the
+    column maximum.
+
+    Parameters
+    ----------
+    pressure_3d : (nz, ny, nx) cupy array, Pa
+    temperature_c_3d : (nz, ny, nx) cupy array, degrees Celsius
+    qrain_3d : (nz, ny, nx) cupy array, kg/kg
+    qsnow_3d : (nz, ny, nx) cupy array, kg/kg
+    qgraup_3d : (nz, ny, nx) cupy array, kg/kg
+
+    Returns
+    -------
+    refl_out : (ny, nx) cupy array, composite reflectivity in dBZ
+    """
+    pressure_3d = _to_gpu(pressure_3d)
+    temperature_c_3d = _to_gpu(temperature_c_3d)
+    qrain_3d = _to_gpu(qrain_3d)
+    qsnow_3d = _to_gpu(qsnow_3d)
+    qgraup_3d = _to_gpu(qgraup_3d)
+
+    nz, ny, nx_ = pressure_3d.shape
+    refl_out = cp.full((ny, nx_), -999.0, dtype=cp.float64)
+    grid, block = _grid_block(ny, nx_)
+    _composite_reflectivity_hydro_kern(
+        grid, block,
+        (pressure_3d, temperature_c_3d, qrain_3d, qsnow_3d, qgraup_3d,
+         refl_out,
+         np.int32(nz), np.int32(ny), np.int32(nx_))
+    )
+    return refl_out

@@ -173,11 +173,15 @@ class TestThermodynamics:
 
     def test_density(self):
         import metrust.calc as mr
+        from metrust.units import units
         import metcu
         p = np.array([1000, 850, 700])
         t = np.array([25, 15, 5])
         w = np.array([15, 10, 5])  # g/kg
-        _compare(metcu.density(p, t, w), mr.density(p, t, w))
+        _compare(
+            metcu.density(p, t, w),
+            mr.density(p * units.hPa, t * units.degC, w * units('g/kg')),
+        )
 
     def test_dewpoint(self):
         import metrust.calc as mr
@@ -234,12 +238,19 @@ class TestThermodynamics:
 
     def test_virtual_potential_temperature(self):
         import metrust.calc as mr
+        from metrust.units import units
         import metcu
         p = np.array([1000, 850])
         t = np.array([25, 15])
         w = np.array([15, 10])  # g/kg
-        _compare(metcu.virtual_potential_temperature(p, t, w),
-                 mr.virtual_potential_temperature(p, t, w))
+        _compare(
+            metcu.virtual_potential_temperature(p, t, w),
+            mr.virtual_potential_temperature(
+                p * units.hPa,
+                t * units.degC,
+                w * units('g/kg'),
+            ),
+        )
 
     def test_wet_bulb_potential_temperature(self):
         import metrust.calc as mr

@@ -1020,8 +1020,11 @@ heat_index_kernel = cp.ElementwiseKernel(
     double t_f = temperature * 9.0 / 5.0 + 32.0;
     double rh = relative_humidity;
     double hi_f;
-    if (t_f < 80.0) {
-        hi_f = 0.5 * (t_f + 61.0 + (t_f - 68.0) * 1.2 + rh * 0.094);
+    /* NWS two-step: compute Steadman, average with T, then decide */
+    double steadman = 0.5 * (t_f + 61.0 + (t_f - 68.0) * 1.2 + rh * 0.094);
+    double hi_avg = (steadman + t_f) / 2.0;
+    if (hi_avg < 80.0) {
+        hi_f = hi_avg;
     } else {
         hi_f = -42.379
             + 2.04901523 * t_f

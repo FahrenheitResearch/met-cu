@@ -43,13 +43,70 @@ def _broadcast_spacing(val, shape):
 
 
 # ===================================================================
+# Shared CUDA device functions for boundary-aware finite differences.
+# Every stencil kernel prepends this preamble so that derivative
+# computations use one-sided (second-order) stencils at domain edges
+# instead of skipping those points entirely.
+# ===================================================================
+_deriv_device_funcs = r'''
+/* ---- df/dx at (j, i) with boundary-aware stencil ---- */
+__device__ double ddx(const double* f, const double* dx,
+                      int j, int i, int ny, int nx) {
+    int idx = j * nx + i;
+    double h = dx[idx];
+    if (i == 0)
+        return (-3.0*f[idx] + 4.0*f[idx+1] - f[idx+2]) / (2.0*h);
+    if (i == nx - 1)
+        return (3.0*f[idx] - 4.0*f[idx-1] + f[idx-2]) / (2.0*h);
+    return (f[idx+1] - f[idx-1]) / (2.0*h);
+}
+
+/* ---- df/dy at (j, i) with boundary-aware stencil ---- */
+__device__ double ddy(const double* f, const double* dy,
+                      int j, int i, int ny, int nx) {
+    int idx = j * nx + i;
+    double h = dy[idx];
+    if (j == 0)
+        return (-3.0*f[idx] + 4.0*f[idx+nx] - f[idx+2*nx]) / (2.0*h);
+    if (j == ny - 1)
+        return (3.0*f[idx] - 4.0*f[idx-nx] + f[idx-2*nx]) / (2.0*h);
+    return (f[idx+nx] - f[idx-nx]) / (2.0*h);
+}
+
+/* ---- d2f/dx2 at (j, i) with boundary-aware stencil ---- */
+__device__ double d2dx2(const double* f, const double* dx,
+                        int j, int i, int ny, int nx) {
+    int idx = j * nx + i;
+    double h = dx[idx];
+    if (i == 0)
+        return (f[idx] - 2.0*f[idx+1] + f[idx+2]) / (h*h);
+    if (i == nx - 1)
+        return (f[idx] - 2.0*f[idx-1] + f[idx-2]) / (h*h);
+    return (f[idx+1] - 2.0*f[idx] + f[idx-1]) / (h*h);
+}
+
+/* ---- d2f/dy2 at (j, i) with boundary-aware stencil ---- */
+__device__ double d2dy2(const double* f, const double* dy,
+                        int j, int i, int ny, int nx) {
+    int idx = j * nx + i;
+    double h = dy[idx];
+    if (j == 0)
+        return (f[idx] - 2.0*f[idx+nx] + f[idx+2*nx]) / (h*h);
+    if (j == ny - 1)
+        return (f[idx] - 2.0*f[idx-nx] + f[idx-2*nx]) / (h*h);
+    return (f[idx+nx] - 2.0*f[idx] + f[idx-nx]) / (h*h);
+}
+'''
+
+
+# ===================================================================
 # 1. Differential-operator stencil kernels
 # ===================================================================
 
 # ------------------------------------------------------------------
 # 1. vorticity  dv/dx - du/dy
 # ------------------------------------------------------------------
-_vorticity_code = r'''
+_vorticity_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void vorticity_kernel(
     const double* u,
@@ -61,10 +118,10 @@ void vorticity_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
+    double dvdx = ddx(v, dx, j, i, ny, nx);
+    double dudy = ddy(u, dy, j, i, ny, nx);
     out[idx] = dvdx - dudy;
 }
 '''
@@ -85,7 +142,7 @@ def vorticity(u, v, dx, dy):
 # ------------------------------------------------------------------
 # 2. divergence  du/dx + dv/dy
 # ------------------------------------------------------------------
-_divergence_code = r'''
+_divergence_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void divergence_kernel(
     const double* u,
@@ -97,10 +154,10 @@ void divergence_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dudx = (u[idx + 1] - u[idx - 1]) / (2.0 * dx[idx]);
-    double dvdy = (v[idx + nx] - v[idx - nx]) / (2.0 * dy[idx]);
+    double dudx = ddx(u, dx, j, i, ny, nx);
+    double dvdy = ddy(v, dy, j, i, ny, nx);
     out[idx] = dudx + dvdy;
 }
 '''
@@ -121,7 +178,7 @@ def divergence(u, v, dx, dy):
 # ------------------------------------------------------------------
 # 3. absolute_vorticity  relative_vort + f
 # ------------------------------------------------------------------
-_absolute_vorticity_code = r'''
+_absolute_vorticity_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void absolute_vorticity_kernel(
     const double* u,
@@ -134,10 +191,10 @@ void absolute_vorticity_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
+    double dvdx = ddx(v, dx, j, i, ny, nx);
+    double dudy = ddy(u, dy, j, i, ny, nx);
     out[idx] = dvdx - dudy + f[idx];
 }
 '''
@@ -158,7 +215,7 @@ def absolute_vorticity(u, v, dx, dy, f):
 # ------------------------------------------------------------------
 # 4. shearing_deformation  dv/dx + du/dy
 # ------------------------------------------------------------------
-_shearing_deformation_code = r'''
+_shearing_deformation_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void shearing_deformation_kernel(
     const double* u,
@@ -170,10 +227,10 @@ void shearing_deformation_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
+    double dvdx = ddx(v, dx, j, i, ny, nx);
+    double dudy = ddy(u, dy, j, i, ny, nx);
     out[idx] = dvdx + dudy;
 }
 '''
@@ -194,7 +251,7 @@ def shearing_deformation(u, v, dx, dy):
 # ------------------------------------------------------------------
 # 5. stretching_deformation  du/dx - dv/dy
 # ------------------------------------------------------------------
-_stretching_deformation_code = r'''
+_stretching_deformation_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void stretching_deformation_kernel(
     const double* u,
@@ -206,10 +263,10 @@ void stretching_deformation_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dudx = (u[idx + 1] - u[idx - 1]) / (2.0 * dx[idx]);
-    double dvdy = (v[idx + nx] - v[idx - nx]) / (2.0 * dy[idx]);
+    double dudx = ddx(u, dx, j, i, ny, nx);
+    double dvdy = ddy(v, dy, j, i, ny, nx);
     out[idx] = dudx - dvdy;
 }
 '''
@@ -230,7 +287,7 @@ def stretching_deformation(u, v, dx, dy):
 # ------------------------------------------------------------------
 # 6. total_deformation  sqrt(shearing^2 + stretching^2)
 # ------------------------------------------------------------------
-_total_deformation_code = r'''
+_total_deformation_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void total_deformation_kernel(
     const double* u,
@@ -242,12 +299,12 @@ void total_deformation_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dudx = (u[idx + 1] - u[idx - 1]) / (2.0 * dx[idx]);
-    double dvdy = (v[idx + nx] - v[idx - nx]) / (2.0 * dy[idx]);
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
+    double dudx = ddx(u, dx, j, i, ny, nx);
+    double dvdy = ddy(v, dy, j, i, ny, nx);
+    double dvdx = ddx(v, dx, j, i, ny, nx);
+    double dudy = ddy(u, dy, j, i, ny, nx);
     double shear = dvdx + dudy;
     double stretch = dudx - dvdy;
     out[idx] = sqrt(shear * shear + stretch * stretch);
@@ -273,7 +330,7 @@ def total_deformation(u, v, dx, dy):
 #    Using natural-coordinate form:
 #    zeta_c = (u^2 * dv/dx - v^2 * du/dy - u*v*(du/dx - dv/dy)) / (u^2+v^2)
 # ------------------------------------------------------------------
-_curvature_vorticity_code = r'''
+_curvature_vorticity_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void curvature_vorticity_kernel(
     const double* u,
@@ -285,18 +342,18 @@ void curvature_vorticity_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
     double uc = u[idx], vc = v[idx];
     double spd2 = uc * uc + vc * vc;
     if (spd2 < 1e-20) { out[idx] = 0.0; return; }
-    double dudx = (u[idx + 1] - u[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dvdy = (v[idx + nx] - v[idx - nx]) / (2.0 * dy[idx]);
+    double dudx_v = ddx(u, dx, j, i, ny, nx);
+    double dudy_v = ddy(u, dy, j, i, ny, nx);
+    double dvdx_v = ddx(v, dx, j, i, ny, nx);
+    double dvdy_v = ddy(v, dy, j, i, ny, nx);
     // curvature vorticity = (u^2 dvdx - v^2 dudy + uv(dvdy - dudx)) / V^2
-    out[idx] = (uc * uc * dvdx - vc * vc * dudy
-                + uc * vc * (dvdy - dudx)) / spd2;
+    out[idx] = (uc * uc * dvdx_v - vc * vc * dudy_v
+                + uc * vc * (dvdy_v - dudx_v)) / spd2;
 }
 '''
 _curvature_vorticity_kern = cp.RawKernel(_curvature_vorticity_code, 'curvature_vorticity_kernel')
@@ -319,7 +376,7 @@ def curvature_vorticity(u, v, dx, dy):
 #    Direct formula: (v^2 dudx + u^2 dvdy - uv(dvdx + dudy)) / V^2
 #    but we can also just subtract, here we compute directly.
 # ------------------------------------------------------------------
-_shear_vorticity_code = r'''
+_shear_vorticity_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void shear_vorticity_kernel(
     const double* u,
@@ -331,19 +388,19 @@ void shear_vorticity_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
     double uc = u[idx], vc = v[idx];
     double spd2 = uc * uc + vc * vc;
     if (spd2 < 1e-20) { out[idx] = 0.0; return; }
-    double dudx = (u[idx + 1] - u[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dvdy = (v[idx + nx] - v[idx - nx]) / (2.0 * dy[idx]);
+    double dudx_v = ddx(u, dx, j, i, ny, nx);
+    double dudy_v = ddy(u, dy, j, i, ny, nx);
+    double dvdx_v = ddx(v, dx, j, i, ny, nx);
+    double dvdy_v = ddy(v, dy, j, i, ny, nx);
     // shear vorticity = -(v^2 dudx + u^2 dvdy - uv(dvdx + dudy)) / V^2
     // Derived from zeta_s = zeta - zeta_c
-    out[idx] = -(vc * vc * dudx + uc * uc * dvdy
-                 - uc * vc * (dvdx + dudy)) / spd2;
+    out[idx] = -(vc * vc * dudx_v + uc * uc * dvdy_v
+                 - uc * vc * (dvdx_v + dudy_v)) / spd2;
 }
 '''
 _shear_vorticity_kern = cp.RawKernel(_shear_vorticity_code, 'shear_vorticity_kernel')
@@ -363,7 +420,7 @@ def shear_vorticity(u, v, dx, dy):
 # ------------------------------------------------------------------
 # 9. first_derivative_x  df/dx  (centered)
 # ------------------------------------------------------------------
-_first_derivative_x_code = r'''
+_first_derivative_x_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void first_derivative_x_kernel(
     const double* f,
@@ -373,9 +430,8 @@ void first_derivative_x_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
-    int idx = j * nx + i;
-    out[idx] = (f[idx + 1] - f[idx - 1]) / (2.0 * dx[idx]);
+    if (i >= nx || j >= ny) return;
+    out[j * nx + i] = ddx(f, dx, j, i, ny, nx);
 }
 '''
 _first_derivative_x_kern = cp.RawKernel(_first_derivative_x_code, 'first_derivative_x_kernel')
@@ -395,7 +451,7 @@ def first_derivative_x(f, dx):
 # ------------------------------------------------------------------
 # 10. first_derivative_y  df/dy
 # ------------------------------------------------------------------
-_first_derivative_y_code = r'''
+_first_derivative_y_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void first_derivative_y_kernel(
     const double* f,
@@ -405,9 +461,8 @@ void first_derivative_y_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
-    int idx = j * nx + i;
-    out[idx] = (f[idx + nx] - f[idx - nx]) / (2.0 * dy[idx]);
+    if (i >= nx || j >= ny) return;
+    out[j * nx + i] = ddy(f, dy, j, i, ny, nx);
 }
 '''
 _first_derivative_y_kern = cp.RawKernel(_first_derivative_y_code, 'first_derivative_y_kernel')
@@ -427,7 +482,7 @@ def first_derivative_y(f, dy):
 # ------------------------------------------------------------------
 # 11. second_derivative_x  d2f/dx2
 # ------------------------------------------------------------------
-_second_derivative_x_code = r'''
+_second_derivative_x_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void second_derivative_x_kernel(
     const double* f,
@@ -437,10 +492,8 @@ void second_derivative_x_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
-    int idx = j * nx + i;
-    double d = dx[idx];
-    out[idx] = (f[idx + 1] - 2.0 * f[idx] + f[idx - 1]) / (d * d);
+    if (i >= nx || j >= ny) return;
+    out[j * nx + i] = d2dx2(f, dx, j, i, ny, nx);
 }
 '''
 _second_derivative_x_kern = cp.RawKernel(_second_derivative_x_code, 'second_derivative_x_kernel')
@@ -460,7 +513,7 @@ def second_derivative_x(f, dx):
 # ------------------------------------------------------------------
 # 12. second_derivative_y  d2f/dy2
 # ------------------------------------------------------------------
-_second_derivative_y_code = r'''
+_second_derivative_y_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void second_derivative_y_kernel(
     const double* f,
@@ -470,10 +523,8 @@ void second_derivative_y_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
-    int idx = j * nx + i;
-    double d = dy[idx];
-    out[idx] = (f[idx + nx] - 2.0 * f[idx] + f[idx - nx]) / (d * d);
+    if (i >= nx || j >= ny) return;
+    out[j * nx + i] = d2dy2(f, dy, j, i, ny, nx);
 }
 '''
 _second_derivative_y_kern = cp.RawKernel(_second_derivative_y_code, 'second_derivative_y_kernel')
@@ -493,7 +544,7 @@ def second_derivative_y(f, dy):
 # ------------------------------------------------------------------
 # 13. laplacian  d2f/dx2 + d2f/dy2
 # ------------------------------------------------------------------
-_laplacian_code = r'''
+_laplacian_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void laplacian_kernel(
     const double* f,
@@ -504,12 +555,8 @@ void laplacian_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
-    int idx = j * nx + i;
-    double dxv = dx[idx], dyv = dy[idx];
-    double d2fdx2 = (f[idx + 1] - 2.0 * f[idx] + f[idx - 1]) / (dxv * dxv);
-    double d2fdy2 = (f[idx + nx] - 2.0 * f[idx] + f[idx - nx]) / (dyv * dyv);
-    out[idx] = d2fdx2 + d2fdy2;
+    if (i >= nx || j >= ny) return;
+    out[j * nx + i] = d2dx2(f, dx, j, i, ny, nx) + d2dy2(f, dy, j, i, ny, nx);
 }
 '''
 _laplacian_kern = cp.RawKernel(_laplacian_code, 'laplacian_kernel')
@@ -529,7 +576,7 @@ def laplacian(f, dx, dy):
 # ------------------------------------------------------------------
 # 14. gradient  (df/dx, df/dy)
 # ------------------------------------------------------------------
-_gradient_code = r'''
+_gradient_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void gradient_kernel(
     const double* f,
@@ -541,10 +588,10 @@ void gradient_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    dfdx[idx] = (f[idx + 1] - f[idx - 1]) / (2.0 * dx[idx]);
-    dfdy[idx] = (f[idx + nx] - f[idx - nx]) / (2.0 * dy[idx]);
+    dfdx[idx] = ddx(f, dx, j, i, ny, nx);
+    dfdy[idx] = ddy(f, dy, j, i, ny, nx);
 }
 '''
 _gradient_kern = cp.RawKernel(_gradient_code, 'gradient_kernel')
@@ -565,7 +612,7 @@ def gradient(f, dx, dy):
 # ------------------------------------------------------------------
 # 15. advection  -u*df/dx - v*df/dy
 # ------------------------------------------------------------------
-_advection_code = r'''
+_advection_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void advection_kernel(
     const double* field,
@@ -578,10 +625,10 @@ void advection_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dfdx = (field[idx + 1] - field[idx - 1]) / (2.0 * dx[idx]);
-    double dfdy = (field[idx + nx] - field[idx - nx]) / (2.0 * dy[idx]);
+    double dfdx = ddx(field, dx, j, i, ny, nx);
+    double dfdy = ddy(field, dy, j, i, ny, nx);
     out[idx] = -(u[idx] * dfdx + v[idx] * dfdy);
 }
 '''
@@ -608,7 +655,7 @@ def advection(field, u, v, dx, dy):
 #     F = -0.5 * |grad(theta)| * (D - E*cos(2*beta))
 #     We use the component form below (Petterssen 1936).
 # ------------------------------------------------------------------
-_frontogenesis_code = r'''
+_frontogenesis_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void frontogenesis_kernel(
     const double* theta,
@@ -621,27 +668,27 @@ void frontogenesis_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 2 || i >= nx-2 || j < 2 || j >= ny-2) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
 
     // First derivatives of theta
-    double dtdx = (theta[idx + 1] - theta[idx - 1]) / (2.0 * dx[idx]);
-    double dtdy = (theta[idx + nx] - theta[idx - nx]) / (2.0 * dy[idx]);
+    double dtdx = ddx(theta, dx, j, i, ny, nx);
+    double dtdy = ddy(theta, dy, j, i, ny, nx);
     double mag = sqrt(dtdx * dtdx + dtdy * dtdy);
     if (mag < 1e-20) { out[idx] = 0.0; return; }
 
     // Wind derivatives
-    double dudx = (u[idx + 1] - u[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dvdy = (v[idx + nx] - v[idx - nx]) / (2.0 * dy[idx]);
+    double dudx_v = ddx(u, dx, j, i, ny, nx);
+    double dudy_v = ddy(u, dy, j, i, ny, nx);
+    double dvdx_v = ddx(v, dx, j, i, ny, nx);
+    double dvdy_v = ddy(v, dy, j, i, ny, nx);
 
     // Petterssen frontogenesis:
     // F = (1/|grad_theta|) * (dtdx^2*dudx + dtdy^2*dvdy + dtdx*dtdy*(dvdx+dudy))
     // Sign convention: positive = frontogenesis
-    double F = (dtdx * dtdx * dudx
-              + dtdy * dtdy * dvdy
-              + dtdx * dtdy * (dvdx + dudy));
+    double F = (dtdx * dtdx * dudx_v
+              + dtdy * dtdy * dvdy_v
+              + dtdx * dtdy * (dvdx_v + dudy_v));
     // Multiply by -1 for standard convention (confluence -> positive)
     out[idx] = -F / mag;
 }
@@ -667,7 +714,7 @@ def frontogenesis(theta, u, v, dx, dy):
 #     For simplicity we accept (u, v, T, p_scalar) and compute
 #     Q-vectors using the full wind (caller passes geostrophic wind).
 # ------------------------------------------------------------------
-_q_vector_code = r'''
+_q_vector_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void q_vector_kernel(
     const double* u,
@@ -683,20 +730,20 @@ void q_vector_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 2 || i >= nx-2 || j < 2 || j >= ny-2) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
 
-    double dTdx = (temperature[idx + 1] - temperature[idx - 1]) / (2.0 * dx[idx]);
-    double dTdy = (temperature[idx + nx] - temperature[idx - nx]) / (2.0 * dy[idx]);
+    double dTdx = ddx(temperature, dx, j, i, ny, nx);
+    double dTdy = ddy(temperature, dy, j, i, ny, nx);
 
-    double dudx = (u[idx + 1] - u[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dvdy = (v[idx + nx] - v[idx - nx]) / (2.0 * dy[idx]);
+    double dudx_v = ddx(u, dx, j, i, ny, nx);
+    double dudy_v = ddy(u, dy, j, i, ny, nx);
+    double dvdx_v = ddx(v, dx, j, i, ny, nx);
+    double dvdy_v = ddy(v, dy, j, i, ny, nx);
 
     double coeff = -Rd / pressure;
-    q1_out[idx] = coeff * (dudx * dTdx + dvdx * dTdy);
-    q2_out[idx] = coeff * (dudy * dTdx + dvdy * dTdy);
+    q1_out[idx] = coeff * (dudx_v * dTdx + dvdx_v * dTdy);
+    q2_out[idx] = coeff * (dudy_v * dTdx + dvdy_v * dTdy);
 }
 '''
 _q_vector_kern = cp.RawKernel(_q_vector_code, 'q_vector_kernel')
@@ -720,7 +767,7 @@ def q_vector(u, v, temperature, dx, dy, pressure, Rd=287.04):
 # 18. geostrophic_wind  ug = -(g/f)*dZ/dy,  vg = (g/f)*dZ/dx
 #     Z is geopotential height (m), f is Coriolis (rad/s).
 # ------------------------------------------------------------------
-_geostrophic_wind_code = r'''
+_geostrophic_wind_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void geostrophic_wind_kernel(
     const double* Z,
@@ -734,12 +781,12 @@ void geostrophic_wind_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
     double fc = f[idx];
     if (fabs(fc) < 1e-20) { ug[idx] = 0.0; vg[idx] = 0.0; return; }
-    double dZdx = (Z[idx + 1] - Z[idx - 1]) / (2.0 * dx[idx]);
-    double dZdy = (Z[idx + nx] - Z[idx - nx]) / (2.0 * dy[idx]);
+    double dZdx = ddx(Z, dx, j, i, ny, nx);
+    double dZdy = ddy(Z, dy, j, i, ny, nx);
     ug[idx] = -(grav / fc) * dZdy;
     vg[idx] =  (grav / fc) * dZdx;
 }
@@ -763,7 +810,7 @@ def geostrophic_wind(Z, f, dx, dy, g=9.80665):
 # ------------------------------------------------------------------
 # 19. ageostrophic_wind  ua = u - ug,  va = v - vg
 # ------------------------------------------------------------------
-_ageostrophic_wind_code = r'''
+_ageostrophic_wind_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void ageostrophic_wind_kernel(
     const double* u,
@@ -779,12 +826,12 @@ void ageostrophic_wind_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
     double fc = f[idx];
     if (fabs(fc) < 1e-20) { ua[idx] = u[idx]; va[idx] = v[idx]; return; }
-    double dZdx = (Z[idx + 1] - Z[idx - 1]) / (2.0 * dx[idx]);
-    double dZdy = (Z[idx + nx] - Z[idx - nx]) / (2.0 * dy[idx]);
+    double dZdx = ddx(Z, dx, j, i, ny, nx);
+    double dZdy = ddy(Z, dy, j, i, ny, nx);
     double ug = -(grav / fc) * dZdy;
     double vg =  (grav / fc) * dZdx;
     ua[idx] = u[idx] - ug;
@@ -813,7 +860,7 @@ def ageostrophic_wind(u, v, Z, f, dx, dy, g=9.80665):
 #     On isentropic surfaces, zeta and dtheta/dp are at each (j, i).
 #     pressure is a 2D field on the isentropic surface.
 # ------------------------------------------------------------------
-_pv_baroclinic_code = r'''
+_pv_baroclinic_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void potential_vorticity_baroclinic_kernel(
     const double* u,
@@ -830,17 +877,17 @@ void potential_vorticity_baroclinic_kernel(
     // Per-column, per-level: thread covers (j, i, k)
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
 
     int nxy = ny * nx;
     int idx2d = j * nx + i;
 
     for (int k = 1; k < nz - 1; k++) {
         int idx3d = k * nxy + idx2d;
-        // Relative vorticity at this level
-        double dvdx = (v[idx3d + 1] - v[idx3d - 1]) / (2.0 * dx[idx2d]);
-        double dudy = (u[idx3d + nx] - u[idx3d - nx]) / (2.0 * dy[idx2d]);
-        double zeta = dvdx - dudy;
+        // Relative vorticity at this level (pass pointer to level-k slice)
+        double dvdx_v = ddx(&v[k * nxy], dx, j, i, ny, nx);
+        double dudy_v = ddy(&u[k * nxy], dy, j, i, ny, nx);
+        double zeta = dvdx_v - dudy_v;
 
         // dtheta/dp centered in vertical
         double dp = pressure[(k + 1) * nxy + idx2d] - pressure[(k - 1) * nxy + idx2d];
@@ -885,7 +932,7 @@ def potential_vorticity_baroclinic(u, v, theta, pressure, dx, dy, f, g=9.80665):
 #     PV_bt = (f + zeta) / depth
 #     depth is a 2D layer depth field.
 # ------------------------------------------------------------------
-_pv_barotropic_code = r'''
+_pv_barotropic_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void potential_vorticity_barotropic_kernel(
     const double* u,
@@ -899,11 +946,11 @@ void potential_vorticity_barotropic_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
-    double dvdx = (v[idx + 1] - v[idx - 1]) / (2.0 * dx[idx]);
-    double dudy = (u[idx + nx] - u[idx - nx]) / (2.0 * dy[idx]);
-    double zeta = dvdx - dudy;
+    double dvdx_v = ddx(v, dx, j, i, ny, nx);
+    double dudy_v = ddy(u, dy, j, i, ny, nx);
+    double zeta = dvdx_v - dudy_v;
     double h = depth[idx];
     out[idx] = (fabs(h) > 1e-10) ? (f[idx] + zeta) / h : 0.0;
 }
@@ -932,7 +979,7 @@ def potential_vorticity_barotropic(u, v, dx, dy, f, depth):
 #     u_ia = ug + (1/f)(ug*dug/dx + vg*dug/dy)
 #     v_ia = vg + (1/f)(ug*dvg/dx + vg*dvg/dy)
 # ------------------------------------------------------------------
-_inertial_advective_wind_code = r'''
+_inertial_advective_wind_code = _deriv_device_funcs + r'''
 extern "C" __global__
 void inertial_advective_wind_kernel(
     const double* ug,
@@ -946,15 +993,15 @@ void inertial_advective_wind_kernel(
 ) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
-    if (i < 1 || i >= nx-1 || j < 1 || j >= ny-1) return;
+    if (i >= nx || j >= ny) return;
     int idx = j * nx + i;
     double fc = f[idx];
     if (fabs(fc) < 1e-20) { u_ia[idx] = ug[idx]; v_ia[idx] = vg[idx]; return; }
 
-    double dugdx = (ug[idx + 1]  - ug[idx - 1])  / (2.0 * dx[idx]);
-    double dugdy = (ug[idx + nx] - ug[idx - nx]) / (2.0 * dy[idx]);
-    double dvgdx = (vg[idx + 1]  - vg[idx - 1])  / (2.0 * dx[idx]);
-    double dvgdy = (vg[idx + nx] - vg[idx - nx]) / (2.0 * dy[idx]);
+    double dugdx = ddx(ug, dx, j, i, ny, nx);
+    double dugdy = ddy(ug, dy, j, i, ny, nx);
+    double dvgdx = ddx(vg, dx, j, i, ny, nx);
+    double dvgdy = ddy(vg, dy, j, i, ny, nx);
 
     double ugc = ug[idx], vgc = vg[idx];
     u_ia[idx] = ugc + (1.0 / fc) * (ugc * dugdx + vgc * dugdy);

@@ -1,14 +1,15 @@
-"""met-cu — Custom CUDA kernels for every meteorological calculation."""
+"""met-cu — GPU-accelerated meteorological kernels (CUDA + Metal)."""
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
+
+from metcu.backend import get_backend, Backend
 
 
 def __getattr__(name):
     """Lazy import: expose everything from metcu.calc and metcu.constants."""
-    import metcu.calc as _calc  # noqa: F811
-    import metcu.constants as _constants  # noqa: F811
+    import metcu.calc as _calc
+    import metcu.constants as _constants
 
-    # Populate this module's namespace so future lookups are direct
     _all = {}
     for mod in (_calc, _constants):
         for attr in dir(mod):

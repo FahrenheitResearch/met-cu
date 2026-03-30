@@ -5,16 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "met-cu"
 version = "0.2.1"
-description = "Custom CUDA kernels for every meteorological calculation. GPU-accelerated MetPy/metrust."
+description = "Custom GPU kernels for every meteorological calculation. GPU-accelerated MetPy/metrust (CUDA + Metal)."
 requires-python = ">=3.9"
 license = { text = "MIT" }
-keywords = ["cuda", "gpu", "meteorology", "weather", "cupy"]
+keywords = ["cuda", "metal", "gpu", "meteorology", "weather", "cupy", "apple-silicon"]
 dependencies = [
     "numpy>=1.20",
-    "cupy-cuda12x>=13.0",
 ]
 
 [project.optional-dependencies]
+gpu = ["cupy-cuda12x>=13.0"]
+cuda = ["cupy-cuda12x>=13.0"]
+metal = ["pyobjc-framework-Metal>=10.0; sys_platform == 'darwin'"]
 plot = [
     "matplotlib>=3.10",
     "cartopy>=0.25",

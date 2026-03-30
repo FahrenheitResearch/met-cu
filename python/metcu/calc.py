@@ -2,8 +2,8 @@
 
 Every public function mirrors the metrust.calc API exactly: same names,
 same parameter signatures, same return semantics.  Inputs are automatically
-moved to the GPU (cupy arrays), the CUDA kernel is executed, and results
-are returned as cupy arrays on the device.
+moved to the GPU (cupy/Metal arrays), the GPU kernel is executed, and results
+are returned as GPU arrays on the device.
 
 Callers can use ``.get()`` on any result to obtain a numpy array on the CPU.
 
@@ -19,10 +19,31 @@ Unit conventions (same as metrust)
 - Angles:  degrees
 """
 
-import cupy as cp
 import numpy as np
+from metcu.backend import get_backend, Backend
+import metcu.gpu_ops as cp  # backend-agnostic GPU operations
 
-from metcu.utils import to_gpu, to_cpu, strip_units
+_backend = get_backend()
+
+# Backend-aware imports
+if _backend == Backend.METAL:
+    from metcu.metal.runtime import to_metal as to_gpu, to_numpy as to_cpu
+    from metcu.metal.runtime import MetalArray
+    cp = None  # Metal backend — no cupy
+
+    def strip_units(x):
+        if hasattr(x, 'magnitude'):
+            return x.magnitude
+        return x
+
+    def _to_gpu(arr):
+        return to_gpu(arr)
+
+else:
+    from metcu.utils import to_gpu, to_cpu, strip_units
+
+    def _to_gpu(arr):
+        return to_gpu(arr)
 
 try:
     from metrust.units import units
@@ -34,162 +55,329 @@ try:
 except Exception:
     xr = None
 
-# --- thermo kernels ---
-from metcu.kernels.thermo import (
-    potential_temperature as _k_potential_temperature,
-    equivalent_potential_temperature as _k_equivalent_potential_temperature,
-    saturation_vapor_pressure as _k_saturation_vapor_pressure,
-    saturation_mixing_ratio as _k_saturation_mixing_ratio,
-    wet_bulb_temperature as _k_wet_bulb_temperature,
-    dewpoint_from_relative_humidity as _k_dewpoint_from_relative_humidity,
-    relative_humidity_from_dewpoint as _k_relative_humidity_from_dewpoint,
-    virtual_temperature as _k_virtual_temperature,
-    virtual_temperature_from_dewpoint as _k_virtual_temperature_from_dewpoint,
-    mixing_ratio as _k_mixing_ratio,
-    density as _k_density,
-    dewpoint as _k_dewpoint,
-    dewpoint_from_specific_humidity as _k_dewpoint_from_specific_humidity,
-    dry_lapse as _k_dry_lapse,
-    dry_static_energy as _k_dry_static_energy,
-    exner_function as _k_exner_function,
-    moist_lapse as _k_moist_lapse,
-    moist_static_energy as _k_moist_static_energy,
-    parcel_profile as _k_parcel_profile,
-    temperature_from_potential_temperature as _k_temperature_from_potential_temperature,
-    vertical_velocity as _k_vertical_velocity,
-    vertical_velocity_pressure as _k_vertical_velocity_pressure,
-    virtual_potential_temperature as _k_virtual_potential_temperature,
-    wet_bulb_potential_temperature as _k_wet_bulb_potential_temperature,
-    saturation_equivalent_potential_temperature as _k_saturation_equivalent_potential_temperature,
-    vapor_pressure as _k_vapor_pressure,
-    vapor_pressure_from_mixing_ratio as _k_vapor_pressure_from_mixing_ratio,
-    specific_humidity_from_mixing_ratio as _k_specific_humidity_from_mixing_ratio,
-    mixing_ratio_from_relative_humidity as _k_mixing_ratio_from_relative_humidity,
-    mixing_ratio_from_specific_humidity as _k_mixing_ratio_from_specific_humidity,
-    relative_humidity_from_mixing_ratio as _k_relative_humidity_from_mixing_ratio,
-    relative_humidity_from_specific_humidity as _k_relative_humidity_from_specific_humidity,
-    specific_humidity_from_dewpoint as _k_specific_humidity_from_dewpoint,
-    frost_point as _k_frost_point,
-    heat_index as _k_heat_index,
-    windchill as _k_windchill,
-    apparent_temperature as _k_apparent_temperature,
-    moist_air_gas_constant as _k_moist_air_gas_constant,
-    moist_air_specific_heat_pressure as _k_moist_air_specific_heat_pressure,
-    moist_air_poisson_exponent as _k_moist_air_poisson_exponent,
-    water_latent_heat_vaporization as _k_water_latent_heat_vaporization,
-    water_latent_heat_melting as _k_water_latent_heat_melting,
-    water_latent_heat_sublimation as _k_water_latent_heat_sublimation,
-    psychrometric_vapor_pressure as _k_psychrometric_vapor_pressure,
-    add_height_to_pressure as _k_add_height_to_pressure,
-    add_pressure_to_height as _k_add_pressure_to_height,
-    thickness_hydrostatic as _k_thickness_hydrostatic,
-    scale_height as _k_scale_height,
-    geopotential_to_height as _k_geopotential_to_height,
-    height_to_geopotential as _k_height_to_geopotential,
-    pressure_to_height_std as _k_pressure_to_height_std,
-    height_to_pressure_std as _k_height_to_pressure_std,
-    altimeter_to_station_pressure as _k_altimeter_to_station_pressure,
-    station_to_altimeter_pressure as _k_station_to_altimeter_pressure,
-    altimeter_to_sea_level_pressure as _k_altimeter_to_sea_level_pressure,
-    sigma_to_pressure as _k_sigma_to_pressure,
-    montgomery_streamfunction as _k_montgomery_streamfunction,
-    cape_cin as _k_cape_cin,
-    lcl as _k_lcl,
-    lfc as _k_lfc,
-    el as _k_el,
-    lifted_index as _k_lifted_index,
-    ccl as _k_ccl,
-    precipitable_water as _k_precipitable_water,
-    mixed_layer as _k_mixed_layer,
-    downdraft_cape as _k_downdraft_cape,
-    brunt_vaisala_frequency as _k_brunt_vaisala_frequency,
-    brunt_vaisala_frequency_squared as _k_brunt_vaisala_frequency_squared,
-    brunt_vaisala_period as _k_brunt_vaisala_period,
-    static_stability as _k_static_stability,
-    grid_precipitable_water as _k_grid_precipitable_water,
-    grid_cape_cin as _k_grid_cape_cin,
-)
+# --- kernel imports (backend-aware) ---
+if _backend == Backend.METAL:
+    from metcu.metal.thermo import (
+        potential_temperature as _k_potential_temperature,
+        equivalent_potential_temperature as _k_equivalent_potential_temperature,
+        saturation_vapor_pressure as _k_saturation_vapor_pressure,
+        saturation_mixing_ratio as _k_saturation_mixing_ratio,
+        wet_bulb_temperature as _k_wet_bulb_temperature,
+        dewpoint_from_relative_humidity as _k_dewpoint_from_relative_humidity,
+        relative_humidity_from_dewpoint as _k_relative_humidity_from_dewpoint,
+        virtual_temperature as _k_virtual_temperature,
+        virtual_temperature_from_dewpoint as _k_virtual_temperature_from_dewpoint,
+        mixing_ratio as _k_mixing_ratio,
+        density as _k_density,
+        dewpoint as _k_dewpoint,
+        dewpoint_from_specific_humidity as _k_dewpoint_from_specific_humidity,
+        dry_lapse as _k_dry_lapse,
+        dry_static_energy as _k_dry_static_energy,
+        exner_function as _k_exner_function,
+        moist_lapse as _k_moist_lapse,
+        moist_static_energy as _k_moist_static_energy,
+        parcel_profile as _k_parcel_profile,
+        temperature_from_potential_temperature as _k_temperature_from_potential_temperature,
+        vertical_velocity as _k_vertical_velocity,
+        vertical_velocity_pressure as _k_vertical_velocity_pressure,
+        virtual_potential_temperature as _k_virtual_potential_temperature,
+        wet_bulb_potential_temperature as _k_wet_bulb_potential_temperature,
+        saturation_equivalent_potential_temperature as _k_saturation_equivalent_potential_temperature,
+        vapor_pressure as _k_vapor_pressure,
+        vapor_pressure_from_mixing_ratio as _k_vapor_pressure_from_mixing_ratio,
+        specific_humidity_from_mixing_ratio as _k_specific_humidity_from_mixing_ratio,
+        mixing_ratio_from_relative_humidity as _k_mixing_ratio_from_relative_humidity,
+        mixing_ratio_from_specific_humidity as _k_mixing_ratio_from_specific_humidity,
+        relative_humidity_from_mixing_ratio as _k_relative_humidity_from_mixing_ratio,
+        relative_humidity_from_specific_humidity as _k_relative_humidity_from_specific_humidity,
+        specific_humidity_from_dewpoint as _k_specific_humidity_from_dewpoint,
+        frost_point as _k_frost_point,
+        heat_index as _k_heat_index,
+        windchill as _k_windchill,
+        apparent_temperature as _k_apparent_temperature,
+        moist_air_gas_constant as _k_moist_air_gas_constant,
+        moist_air_specific_heat_pressure as _k_moist_air_specific_heat_pressure,
+        moist_air_poisson_exponent as _k_moist_air_poisson_exponent,
+        water_latent_heat_vaporization as _k_water_latent_heat_vaporization,
+        water_latent_heat_melting as _k_water_latent_heat_melting,
+        water_latent_heat_sublimation as _k_water_latent_heat_sublimation,
+        psychrometric_vapor_pressure as _k_psychrometric_vapor_pressure,
+        add_height_to_pressure as _k_add_height_to_pressure,
+        add_pressure_to_height as _k_add_pressure_to_height,
+        thickness_hydrostatic as _k_thickness_hydrostatic,
+        scale_height as _k_scale_height,
+        geopotential_to_height as _k_geopotential_to_height,
+        height_to_geopotential as _k_height_to_geopotential,
+        pressure_to_height_std as _k_pressure_to_height_std,
+        height_to_pressure_std as _k_height_to_pressure_std,
+        altimeter_to_station_pressure as _k_altimeter_to_station_pressure,
+        station_to_altimeter_pressure as _k_station_to_altimeter_pressure,
+        altimeter_to_sea_level_pressure as _k_altimeter_to_sea_level_pressure,
+        sigma_to_pressure as _k_sigma_to_pressure,
+        montgomery_streamfunction as _k_montgomery_streamfunction,
+        cape_cin as _k_cape_cin,
+        lcl as _k_lcl,
+        lfc as _k_lfc,
+        el as _k_el,
+        lifted_index as _k_lifted_index,
+        ccl as _k_ccl,
+        precipitable_water as _k_precipitable_water,
+        mixed_layer as _k_mixed_layer,
+        downdraft_cape as _k_downdraft_cape,
+        brunt_vaisala_frequency as _k_brunt_vaisala_frequency,
+        brunt_vaisala_frequency_squared as _k_brunt_vaisala_frequency_squared,
+        brunt_vaisala_period as _k_brunt_vaisala_period,
+        static_stability as _k_static_stability,
+    )
+    # Grid-level thermo kernels may not exist yet in Metal — provide stubs
+    try:
+        from metcu.metal.thermo import (
+            grid_precipitable_water as _k_grid_precipitable_water,
+            grid_cape_cin as _k_grid_cape_cin,
+        )
+    except ImportError:
+        _k_grid_precipitable_water = None
+        _k_grid_cape_cin = None
 
-# --- wind kernels ---
-from metcu.kernels.wind import (
-    wind_speed as _k_wind_speed,
-    wind_direction as _k_wind_direction,
-    wind_components as _k_wind_components,
-    coriolis_parameter as _k_coriolis_parameter,
-    normal_component as _k_normal_component,
-    tangential_component as _k_tangential_component,
-    friction_velocity as _k_friction_velocity,
-    tke as _k_tke,
-    bulk_shear as _k_bulk_shear,
-    mean_wind as _k_mean_wind,
-    storm_relative_helicity as _k_storm_relative_helicity,
-    bunkers_storm_motion as _k_bunkers_storm_motion,
-    corfidi_storm_motion as _k_corfidi_storm_motion,
-    critical_angle as _k_critical_angle,
-    get_layer as _k_get_layer,
-    gradient_richardson_number as _k_gradient_richardson_number,
-    significant_tornado_parameter as _k_significant_tornado_parameter,
-    supercell_composite_parameter as _k_supercell_composite_parameter,
-    compute_ship as _k_compute_ship,
-    compute_ehi as _k_compute_ehi,
-    compute_dcp as _k_compute_dcp,
-    compute_lapse_rate as _k_compute_lapse_rate,
-    bulk_richardson_number as _k_bulk_richardson_number,
-    k_index as _k_k_index,
-    total_totals as _k_total_totals,
-    cross_totals as _k_cross_totals,
-    vertical_totals as _k_vertical_totals,
-    sweat_index as _k_sweat_index,
-    showalter_index as _k_showalter_index,
-    boyden_index as _k_boyden_index,
-    galvez_davison_index as _k_galvez_davison_index,
-    fosberg_fire_weather_index as _k_fosberg_fire_weather_index,
-    haines_index as _k_haines_index,
-    hot_dry_windy as _k_hot_dry_windy,
-    significant_tornado as _k_significant_tornado,
-    freezing_rain_composite as _k_freezing_rain_composite,
-    warm_nose_check as _k_warm_nose_check,
-    dendritic_growth_zone as _k_dendritic_growth_zone,
-    convective_inhibition_depth as _k_convective_inhibition_depth,
-    grid_storm_relative_helicity as _k_grid_srh,
-)
+    from metcu.metal.wind import (
+        wind_speed as _k_wind_speed,
+        wind_direction as _k_wind_direction,
+        wind_components as _k_wind_components,
+        coriolis_parameter as _k_coriolis_parameter,
+        normal_component as _k_normal_component,
+        tangential_component as _k_tangential_component,
+        friction_velocity as _k_friction_velocity,
+        tke as _k_tke,
+        bulk_shear as _k_bulk_shear,
+        mean_wind as _k_mean_wind,
+        storm_relative_helicity as _k_storm_relative_helicity,
+        bunkers_storm_motion as _k_bunkers_storm_motion,
+        corfidi_storm_motion as _k_corfidi_storm_motion,
+        critical_angle as _k_critical_angle,
+        get_layer as _k_get_layer,
+        gradient_richardson_number as _k_gradient_richardson_number,
+        significant_tornado_parameter as _k_significant_tornado_parameter,
+        supercell_composite_parameter as _k_supercell_composite_parameter,
+        compute_ship as _k_compute_ship,
+        compute_ehi as _k_compute_ehi,
+        compute_dcp as _k_compute_dcp,
+        compute_lapse_rate as _k_compute_lapse_rate,
+        bulk_richardson_number as _k_bulk_richardson_number,
+        k_index as _k_k_index,
+        total_totals as _k_total_totals,
+        cross_totals as _k_cross_totals,
+        vertical_totals as _k_vertical_totals,
+        sweat_index as _k_sweat_index,
+        showalter_index as _k_showalter_index,
+        boyden_index as _k_boyden_index,
+        galvez_davison_index as _k_galvez_davison_index,
+        fosberg_fire_weather_index as _k_fosberg_fire_weather_index,
+        haines_index as _k_haines_index,
+        hot_dry_windy as _k_hot_dry_windy,
+        significant_tornado as _k_significant_tornado,
+        freezing_rain_composite as _k_freezing_rain_composite,
+        warm_nose_check as _k_warm_nose_check,
+        dendritic_growth_zone as _k_dendritic_growth_zone,
+        convective_inhibition_depth as _k_convective_inhibition_depth,
+    )
+    try:
+        from metcu.metal.wind import (
+            grid_storm_relative_helicity as _k_grid_srh,
+        )
+    except ImportError:
+        _k_grid_srh = None
 
-# --- grid kernels ---
-from metcu.kernels.grid import (
-    divergence as _k_divergence,
-    vorticity as _k_vorticity,
-    absolute_vorticity as _k_absolute_vorticity,
-    advection as _k_advection,
-    frontogenesis as _k_frontogenesis,
-    geostrophic_wind as _k_geostrophic_wind,
-    ageostrophic_wind as _k_ageostrophic_wind,
-    potential_vorticity_baroclinic as _k_potential_vorticity_baroclinic,
-    potential_vorticity_barotropic as _k_potential_vorticity_barotropic,
-    shearing_deformation as _k_shearing_deformation,
-    stretching_deformation as _k_stretching_deformation,
-    total_deformation as _k_total_deformation,
-    curvature_vorticity as _k_curvature_vorticity,
-    shear_vorticity as _k_shear_vorticity,
-    q_vector as _k_q_vector,
-    inertial_advective_wind as _k_inertial_advective_wind,
-    lat_lon_grid_deltas as _k_lat_lon_grid_deltas,
-    smooth_gaussian as _k_smooth_gaussian,
-    smooth_rectangular as _k_smooth_rectangular,
-    smooth_circular as _k_smooth_circular,
-    smooth_n_point as _k_smooth_n_point,
-    smooth_window as _k_smooth_window,
-    first_derivative_x as _k_first_derivative_x,
-    first_derivative_y as _k_first_derivative_y,
-    second_derivative_x as _k_second_derivative_x,
-    second_derivative_y as _k_second_derivative_y,
-    laplacian as _k_laplacian,
-    gradient as _k_gradient,
-    composite_reflectivity as _k_composite_reflectivity,
-    get_layer_heights as _k_get_layer_heights,
-    mean_pressure_weighted as _k_mean_pressure_weighted,
-    isentropic_interpolation as _k_isentropic_interpolation,
-    composite_reflectivity_from_hydrometeors as _k_composite_reflectivity_from_hydrometeors,
-)
+    from metcu.metal.grid import (
+        divergence as _k_divergence,
+        vorticity as _k_vorticity,
+        absolute_vorticity as _k_absolute_vorticity,
+        advection as _k_advection,
+        frontogenesis as _k_frontogenesis,
+        geostrophic_wind as _k_geostrophic_wind,
+        ageostrophic_wind as _k_ageostrophic_wind,
+        potential_vorticity_baroclinic as _k_potential_vorticity_baroclinic,
+        potential_vorticity_barotropic as _k_potential_vorticity_barotropic,
+        shearing_deformation as _k_shearing_deformation,
+        stretching_deformation as _k_stretching_deformation,
+        total_deformation as _k_total_deformation,
+        curvature_vorticity as _k_curvature_vorticity,
+        shear_vorticity as _k_shear_vorticity,
+        q_vector as _k_q_vector,
+        inertial_advective_wind as _k_inertial_advective_wind,
+        lat_lon_grid_deltas as _k_lat_lon_grid_deltas,
+        smooth_gaussian as _k_smooth_gaussian,
+        smooth_rectangular as _k_smooth_rectangular,
+        smooth_circular as _k_smooth_circular,
+        smooth_n_point as _k_smooth_n_point,
+        smooth_window as _k_smooth_window,
+        first_derivative_x as _k_first_derivative_x,
+        first_derivative_y as _k_first_derivative_y,
+        second_derivative_x as _k_second_derivative_x,
+        second_derivative_y as _k_second_derivative_y,
+        laplacian as _k_laplacian,
+        gradient as _k_gradient,
+        composite_reflectivity as _k_composite_reflectivity,
+        get_layer_heights as _k_get_layer_heights,
+        mean_pressure_weighted as _k_mean_pressure_weighted,
+        isentropic_interpolation as _k_isentropic_interpolation,
+        composite_reflectivity_from_hydrometeors as _k_composite_reflectivity_from_hydrometeors,
+    )
+
+else:
+    # CUDA backend (original)
+    from metcu.kernels.thermo import (
+        potential_temperature as _k_potential_temperature,
+        equivalent_potential_temperature as _k_equivalent_potential_temperature,
+        saturation_vapor_pressure as _k_saturation_vapor_pressure,
+        saturation_mixing_ratio as _k_saturation_mixing_ratio,
+        wet_bulb_temperature as _k_wet_bulb_temperature,
+        dewpoint_from_relative_humidity as _k_dewpoint_from_relative_humidity,
+        relative_humidity_from_dewpoint as _k_relative_humidity_from_dewpoint,
+        virtual_temperature as _k_virtual_temperature,
+        virtual_temperature_from_dewpoint as _k_virtual_temperature_from_dewpoint,
+        mixing_ratio as _k_mixing_ratio,
+        density as _k_density,
+        dewpoint as _k_dewpoint,
+        dewpoint_from_specific_humidity as _k_dewpoint_from_specific_humidity,
+        dry_lapse as _k_dry_lapse,
+        dry_static_energy as _k_dry_static_energy,
+        exner_function as _k_exner_function,
+        moist_lapse as _k_moist_lapse,
+        moist_static_energy as _k_moist_static_energy,
+        parcel_profile as _k_parcel_profile,
+        temperature_from_potential_temperature as _k_temperature_from_potential_temperature,
+        vertical_velocity as _k_vertical_velocity,
+        vertical_velocity_pressure as _k_vertical_velocity_pressure,
+        virtual_potential_temperature as _k_virtual_potential_temperature,
+        wet_bulb_potential_temperature as _k_wet_bulb_potential_temperature,
+        saturation_equivalent_potential_temperature as _k_saturation_equivalent_potential_temperature,
+        vapor_pressure as _k_vapor_pressure,
+        vapor_pressure_from_mixing_ratio as _k_vapor_pressure_from_mixing_ratio,
+        specific_humidity_from_mixing_ratio as _k_specific_humidity_from_mixing_ratio,
+        mixing_ratio_from_relative_humidity as _k_mixing_ratio_from_relative_humidity,
+        mixing_ratio_from_specific_humidity as _k_mixing_ratio_from_specific_humidity,
+        relative_humidity_from_mixing_ratio as _k_relative_humidity_from_mixing_ratio,
+        relative_humidity_from_specific_humidity as _k_relative_humidity_from_specific_humidity,
+        specific_humidity_from_dewpoint as _k_specific_humidity_from_dewpoint,
+        frost_point as _k_frost_point,
+        heat_index as _k_heat_index,
+        windchill as _k_windchill,
+        apparent_temperature as _k_apparent_temperature,
+        moist_air_gas_constant as _k_moist_air_gas_constant,
+        moist_air_specific_heat_pressure as _k_moist_air_specific_heat_pressure,
+        moist_air_poisson_exponent as _k_moist_air_poisson_exponent,
+        water_latent_heat_vaporization as _k_water_latent_heat_vaporization,
+        water_latent_heat_melting as _k_water_latent_heat_melting,
+        water_latent_heat_sublimation as _k_water_latent_heat_sublimation,
+        psychrometric_vapor_pressure as _k_psychrometric_vapor_pressure,
+        add_height_to_pressure as _k_add_height_to_pressure,
+        add_pressure_to_height as _k_add_pressure_to_height,
+        thickness_hydrostatic as _k_thickness_hydrostatic,
+        scale_height as _k_scale_height,
+        geopotential_to_height as _k_geopotential_to_height,
+        height_to_geopotential as _k_height_to_geopotential,
+        pressure_to_height_std as _k_pressure_to_height_std,
+        height_to_pressure_std as _k_height_to_pressure_std,
+        altimeter_to_station_pressure as _k_altimeter_to_station_pressure,
+        station_to_altimeter_pressure as _k_station_to_altimeter_pressure,
+        altimeter_to_sea_level_pressure as _k_altimeter_to_sea_level_pressure,
+        sigma_to_pressure as _k_sigma_to_pressure,
+        montgomery_streamfunction as _k_montgomery_streamfunction,
+        cape_cin as _k_cape_cin,
+        lcl as _k_lcl,
+        lfc as _k_lfc,
+        el as _k_el,
+        lifted_index as _k_lifted_index,
+        ccl as _k_ccl,
+        precipitable_water as _k_precipitable_water,
+        mixed_layer as _k_mixed_layer,
+        downdraft_cape as _k_downdraft_cape,
+        brunt_vaisala_frequency as _k_brunt_vaisala_frequency,
+        brunt_vaisala_frequency_squared as _k_brunt_vaisala_frequency_squared,
+        brunt_vaisala_period as _k_brunt_vaisala_period,
+        static_stability as _k_static_stability,
+        grid_precipitable_water as _k_grid_precipitable_water,
+        grid_cape_cin as _k_grid_cape_cin,
+    )
+
+    from metcu.kernels.wind import (
+        wind_speed as _k_wind_speed,
+        wind_direction as _k_wind_direction,
+        wind_components as _k_wind_components,
+        coriolis_parameter as _k_coriolis_parameter,
+        normal_component as _k_normal_component,
+        tangential_component as _k_tangential_component,
+        friction_velocity as _k_friction_velocity,
+        tke as _k_tke,
+        bulk_shear as _k_bulk_shear,
+        mean_wind as _k_mean_wind,
+        storm_relative_helicity as _k_storm_relative_helicity,
+        bunkers_storm_motion as _k_bunkers_storm_motion,
+        corfidi_storm_motion as _k_corfidi_storm_motion,
+        critical_angle as _k_critical_angle,
+        get_layer as _k_get_layer,
+        gradient_richardson_number as _k_gradient_richardson_number,
+        significant_tornado_parameter as _k_significant_tornado_parameter,
+        supercell_composite_parameter as _k_supercell_composite_parameter,
+        compute_ship as _k_compute_ship,
+        compute_ehi as _k_compute_ehi,
+        compute_dcp as _k_compute_dcp,
+        compute_lapse_rate as _k_compute_lapse_rate,
+        bulk_richardson_number as _k_bulk_richardson_number,
+        k_index as _k_k_index,
+        total_totals as _k_total_totals,
+        cross_totals as _k_cross_totals,
+        vertical_totals as _k_vertical_totals,
+        sweat_index as _k_sweat_index,
+        showalter_index as _k_showalter_index,
+        boyden_index as _k_boyden_index,
+        galvez_davison_index as _k_galvez_davison_index,
+        fosberg_fire_weather_index as _k_fosberg_fire_weather_index,
+        haines_index as _k_haines_index,
+        hot_dry_windy as _k_hot_dry_windy,
+        significant_tornado as _k_significant_tornado,
+        freezing_rain_composite as _k_freezing_rain_composite,
+        warm_nose_check as _k_warm_nose_check,
+        dendritic_growth_zone as _k_dendritic_growth_zone,
+        convective_inhibition_depth as _k_convective_inhibition_depth,
+        grid_storm_relative_helicity as _k_grid_srh,
+    )
+
+    from metcu.kernels.grid import (
+        divergence as _k_divergence,
+        vorticity as _k_vorticity,
+        absolute_vorticity as _k_absolute_vorticity,
+        advection as _k_advection,
+        frontogenesis as _k_frontogenesis,
+        geostrophic_wind as _k_geostrophic_wind,
+        ageostrophic_wind as _k_ageostrophic_wind,
+        potential_vorticity_baroclinic as _k_potential_vorticity_baroclinic,
+        potential_vorticity_barotropic as _k_potential_vorticity_barotropic,
+        shearing_deformation as _k_shearing_deformation,
+        stretching_deformation as _k_stretching_deformation,
+        total_deformation as _k_total_deformation,
+        curvature_vorticity as _k_curvature_vorticity,
+        shear_vorticity as _k_shear_vorticity,
+        q_vector as _k_q_vector,
+        inertial_advective_wind as _k_inertial_advective_wind,
+        lat_lon_grid_deltas as _k_lat_lon_grid_deltas,
+        smooth_gaussian as _k_smooth_gaussian,
+        smooth_rectangular as _k_smooth_rectangular,
+        smooth_circular as _k_smooth_circular,
+        smooth_n_point as _k_smooth_n_point,
+        smooth_window as _k_smooth_window,
+        first_derivative_x as _k_first_derivative_x,
+        first_derivative_y as _k_first_derivative_y,
+        second_derivative_x as _k_second_derivative_x,
+        second_derivative_y as _k_second_derivative_y,
+        laplacian as _k_laplacian,
+        gradient as _k_gradient,
+        composite_reflectivity as _k_composite_reflectivity,
+        get_layer_heights as _k_get_layer_heights,
+        mean_pressure_weighted as _k_mean_pressure_weighted,
+        isentropic_interpolation as _k_isentropic_interpolation,
+        composite_reflectivity_from_hydrometeors as _k_composite_reflectivity_from_hydrometeors,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +386,6 @@ from metcu.kernels.grid import (
 
 def _STUB_thickness_from_rh(p, t, rh):
     """Hypsometric thickness from P, T, RH -- inline fallback."""
-    import cupy as cp
     w = _k_mixing_ratio_from_relative_humidity(p, t, rh)
     t_k = t + 273.15  # Celsius -> Kelvin
     tv = t_k * (1.0 + w / 0.6219569100577033) / (1.0 + w)
@@ -1244,6 +1431,41 @@ def _STUB_compute_grid_critical_angle(us, vs, ush, vsh):
     return cp.where((mag1 < 0.01) | (mag2 < 0.01), cp.nan, angle)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Backend management (API-compatible with metrust.calc)
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager  # exposed for metrust.calc parity
+
+_BACKEND = "gpu"
+
+
+def get_backend():
+    """Return the active backend name."""
+    return _BACKEND
+
+
+def set_backend(backend):
+    """Set the active backend. met-cu always uses GPU."""
+    global _BACKEND
+    _BACKEND = str(backend).lower()
+
+
+def use_backend(backend):
+    """Temporarily switch to a specific backend (context manager)."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _ctx():
+        previous = get_backend()
+        set_backend(backend)
+        try:
+            yield
+        finally:
+            set_backend(previous)
+    return _ctx()
 
 
 # ---------------------------------------------------------------------------

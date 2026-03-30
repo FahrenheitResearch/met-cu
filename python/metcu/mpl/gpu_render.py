@@ -1,11 +1,12 @@
 """
-Core GPU rendering functions using CuPy.
+Core GPU rendering functions.
 
 Replaces matplotlib's slow CPU-based contourf/pcolormesh/barbs with
 GPU-accelerated equivalents that produce identical visual output.
+Supports both CUDA (CuPy) and Metal backends.
 """
 
-import cupy as cp
+import metcu.gpu_ops as cp
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, BoundaryNorm
@@ -16,6 +17,22 @@ _original_contourf = None
 _original_pcolormesh = None
 _original_imshow = None
 _original_barbs = None
+
+
+def _is_uniform_1d(values, rtol=1e-6, atol=1e-12):
+    """Return True when a 1D coordinate vector is evenly spaced."""
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim != 1 or arr.size < 3:
+        return arr.ndim == 1
+    diffs = np.diff(arr)
+    return np.allclose(diffs, diffs[0], rtol=rtol, atol=atol)
+
+
+def _call_original(method, ax, *args, **kwargs):
+    """Call the original matplotlib method when GPU rendering is unsafe."""
+    if method is None:
+        raise RuntimeError("Original matplotlib method is unavailable")
+    return method(ax, *args, **kwargs)
 
 
 def gpu_contourf(ax, *args, **kwargs):
@@ -40,7 +57,14 @@ def gpu_contourf(ax, *args, **kwargs):
         if len(args) >= 4:
             levels_arg = args[3]
 
+    # contourf semantics depend on the coordinate geometry; if the caller
+    # supplied explicit coordinates or a geospatial transform, preserve the
+    # exact matplotlib path instead of approximating via imshow.
+    if Z.ndim != 2 or X is not None or Y is not None or kwargs.get('transform') is not None:
+        return _call_original(_original_contourf, ax, *args, **kwargs)
+
     # --- Extract kwargs ---
+    kwargs = dict(kwargs)
     levels = kwargs.pop('levels', levels_arg)
     cmap = kwargs.pop('cmap', None)
     vmin = kwargs.pop('vmin', None)
@@ -168,6 +192,29 @@ def gpu_pcolormesh(ax, *args, **kwargs):
     else:
         C = np.asarray(args[0], dtype=np.float64)
 
+    transform = kwargs.get('transform')
+    edgecolors = kwargs.get('edgecolors')
+    linewidth = kwargs.get('linewidth', kwargs.get('linewidths'))
+    shading = kwargs.get('shading')
+    has_non_rectilinear_coords = (
+        X is not None and Y is not None and (
+            X.ndim != 1 or
+            Y.ndim != 1 or
+            not _is_uniform_1d(X) or
+            not _is_uniform_1d(Y)
+        )
+    )
+    if (
+        C.ndim != 2 or
+        transform is not None or
+        has_non_rectilinear_coords or
+        edgecolors not in (None, 'none') or
+        linewidth not in (None, 0, 0.0) or
+        shading == 'gouraud'
+    ):
+        return _call_original(_original_pcolormesh, ax, *args, **kwargs)
+
+    kwargs = dict(kwargs)
     cmap = kwargs.pop('cmap', None)
     vmin = kwargs.pop('vmin', None)
     vmax = kwargs.pop('vmax', None)

@@ -1,5 +1,4 @@
 """Physical constants for meteorological calculations."""
-import cupy as cp
 
 # Fundamental constants
 Rd = 287.04  # J/(kg·K) — dry air gas constant

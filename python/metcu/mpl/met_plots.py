@@ -9,16 +9,18 @@ Fast path (mesoanalysis / mesoanalysis_fast):
   Renders cartopy map borders ONCE as a transparent PNG overlay, then composites
   GPU-colormapped data with PIL for ~50ms per frame after the first.
 """
+import io
 import os
 import hashlib
+import warnings
 import numpy as np
-import cupy as cp
+import metcu.gpu_ops as cp
 import matplotlib
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from matplotlib.axes import Axes
 from matplotlib.colors import Normalize, BoundaryNorm
-from matplotlib.cm import ScalarMappable
 from PIL import Image, ImageDraw, ImageFont
 from metcu.kernels import thermo, wind, grid
 
@@ -26,9 +28,22 @@ from metcu.kernels import thermo, wind, grid
 _HRRR_EXTENT = [-134, -60, 21, 53]
 # CONUS display extent
 _CONUS_EXTENT = [-125, -66, 23, 50]
-# Default projection
-_LAMBERT = ccrs.LambertConformal(central_longitude=-96, standard_parallels=(33, 45))
+# HRRR native Lambert Conformal projection parameters
+_HRRR_GLOBE = ccrs.Globe(semimajor_axis=6371229.0, semiminor_axis=6371229.0)
+_LAMBERT = ccrs.LambertConformal(
+    central_longitude=-97.5,
+    central_latitude=38.5,
+    standard_parallels=(38.5,),
+    globe=_HRRR_GLOBE,
+)
 _PLATE = ccrs.PlateCarree()
+_ORIGINAL_PCOLORMESH = Axes.pcolormesh
+_APPROXIMATE_GRID_WARNING = (
+    "Plotting without 2D latitude/longitude coordinates falls back to an "
+    "approximate HRRR extent and may not align with cartopy features. Pass "
+    "`lats` and `lons` for geographically correct output."
+)
+_warned_about_approximate_grid = False
 
 # Cartopy features at 50m resolution
 _STATES = cfeature.NaturalEarthFeature(
@@ -50,9 +65,98 @@ def _add_map_features(ax):
     ax.set_extent(_CONUS_EXTENT, crs=_PLATE)
 
 
+def _warn_about_approximate_grid():
+    """Warn once when plotting without real geographic coordinates."""
+    global _warned_about_approximate_grid
+    if _warned_about_approximate_grid:
+        return
+    warnings.warn(_APPROXIMATE_GRID_WARNING, RuntimeWarning, stacklevel=3)
+    _warned_about_approximate_grid = True
+
+
+def _coerce_geo_array(name, values, shape):
+    """Convert a latitude/longitude grid to float64 with an exact shape match."""
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.shape != shape:
+        raise ValueError(
+            f"{name} must have shape {shape}, got {arr.shape}"
+        )
+    return arr
+
+
+def _normalize_longitudes(lons):
+    """Normalize longitudes into [-180, 180] for cartopy PlateCarree."""
+    lon_arr = np.asarray(lons, dtype=np.float64)
+    return np.where(lon_arr > 180.0, lon_arr - 360.0, lon_arr)
+
+
+def _extract_geo_grid(fields, shape):
+    """Return 2D latitude/longitude arrays from a field dict when available."""
+    grid = fields.get('grid')
+    if isinstance(grid, dict):
+        lat = grid.get('lats', grid.get('lat', grid.get('latitude')))
+        lon = grid.get('lons', grid.get('lon', grid.get('longitude')))
+    elif isinstance(grid, (tuple, list)) and len(grid) == 2:
+        lat, lon = grid
+    else:
+        lat = lon = None
+
+    if lat is None:
+        for key in ('lats', 'lat', 'latitude'):
+            if fields.get(key) is not None:
+                lat = fields[key]
+                break
+
+    if lon is None:
+        for key in ('lons', 'lon', 'longitude'):
+            if fields.get(key) is not None:
+                lon = fields[key]
+                break
+
+    if lat is None and lon is None:
+        return None, None
+    if lat is None or lon is None:
+        raise ValueError("Both latitude and longitude grids must be provided together")
+
+    return (
+        _coerce_geo_array('lats', lat, shape),
+        _normalize_longitudes(_coerce_geo_array('lons', lon, shape)),
+    )
+
+
+def _infer_field_shape(fields):
+    """Infer the primary 2D field shape for mesoanalysis plots."""
+    for key in ('t2m', 'td2m', 'cape', 'refc'):
+        value = fields.get(key)
+        if value is None:
+            continue
+        arr = np.asarray(value)
+        if arr.ndim != 2:
+            raise ValueError(f"Field {key!r} must be 2D, got shape {arr.shape}")
+        return arr.shape
+    raise ValueError("No valid 2D fields found")
+
+
+def _figure_to_image(fig, dpi, save=None):
+    """Render a matplotlib figure to a PIL RGBA image and optionally save it."""
+    if save:
+        fig.savefig(save, dpi=dpi, facecolor=fig.get_facecolor(), bbox_inches='tight')
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, facecolor=fig.get_facecolor(),
+                bbox_inches='tight')
+    buf.seek(0)
+    image = Image.open(buf).convert('RGBA')
+    image.load()
+    buf.close()
+    plt.close(fig)
+    return image
+
+
 def plot_field(ax, data, title, cmap='RdYlBu_r', vmin=None, vmax=None,
                extend='both', colorbar=True, cb_label=None,
-               extent=None, discrete_levels=None):
+               extent=None, discrete_levels=None, lats=None, lons=None,
+               transform=None):
     """Generic field plot with cartopy map overlay.
 
     Parameters
@@ -77,6 +181,10 @@ def plot_field(ax, data, title, cmap='RdYlBu_r', vmin=None, vmax=None,
         [lon_min, lon_max, lat_min, lat_max] for imshow.
     discrete_levels : array-like or None
         If provided, use BoundaryNorm for discrete color bands.
+    lats, lons : 2D arrays or None
+        If provided, plot on the actual curvilinear grid with pcolormesh.
+    transform : cartopy CRS or None
+        CRS for the provided lats/lons. Defaults to PlateCarree.
     """
     data_f = np.asarray(data, dtype=np.float64)
     if vmin is None:
@@ -97,19 +205,35 @@ def plot_field(ax, data, title, cmap='RdYlBu_r', vmin=None, vmax=None,
     else:
         norm = Normalize(vmin=vmin, vmax=vmax)
 
-    # HRRR Lambert grid: col 0 = east, needs horizontal flip
-    im = ax.imshow(np.fliplr(data_f), origin='lower', cmap=cmap_obj, norm=norm,
-                   extent=extent, transform=_PLATE,
-                   interpolation='bilinear')
+    if lats is not None or lons is not None:
+        if lats is None or lons is None:
+            raise ValueError("Both lats and lons are required when plotting on a geogrid")
+        lats_f = _coerce_geo_array('lats', lats, data_f.shape)
+        lons_f = _normalize_longitudes(_coerce_geo_array('lons', lons, data_f.shape))
+        im = _ORIGINAL_PCOLORMESH(
+            ax,
+            lons_f,
+            lats_f,
+            data_f,
+            cmap=cmap_obj,
+            norm=norm,
+            shading='auto',
+            transform=transform or _PLATE,
+            rasterized=True,
+        )
+    else:
+        _warn_about_approximate_grid()
+        # HRRR Lambert grid: col 0 = east in some upstream readers, so the
+        # approximate image path preserves the historic flip.
+        im = ax.imshow(np.fliplr(data_f), origin='lower', cmap=cmap_obj, norm=norm,
+                       extent=extent, transform=_PLATE,
+                       interpolation='bilinear')
 
     _add_map_features(ax)
     ax.set_title(title, fontsize=10, fontweight='bold')
 
-    sm = ScalarMappable(norm=norm, cmap=cmap_obj)
-    sm.set_array(data_f)
-
     if colorbar:
-        cb = plt.colorbar(sm, ax=ax, orientation='horizontal',
+        cb = plt.colorbar(im, ax=ax, orientation='horizontal',
                           shrink=0.8, pad=0.05, extend=extend)
         if cb_label:
             cb.set_label(cb_label, fontsize=8)
@@ -129,7 +253,7 @@ def plot_temperature(ax, t2m, cmap='RdYlBu_r', units='F', colorbar=True, **kwarg
         label = 'Temperature (C)'
         vmin, vmax = -40, 50
     return plot_field(ax, t, label, cmap=cmap, vmin=vmin, vmax=vmax,
-                      colorbar=colorbar, cb_label=label)
+                      colorbar=colorbar, cb_label=label, **kwargs)
 
 
 def plot_dewpoint(ax, td2m, cmap='YlGn', units='F', colorbar=True, **kwargs):
@@ -143,7 +267,7 @@ def plot_dewpoint(ax, td2m, cmap='YlGn', units='F', colorbar=True, **kwargs):
         label = 'Dewpoint (C)'
         vmin, vmax = -30, 35
     return plot_field(ax, td, label, cmap=cmap, vmin=vmin, vmax=vmax,
-                      colorbar=colorbar, cb_label=label)
+                      colorbar=colorbar, cb_label=label, **kwargs)
 
 
 def plot_cape(ax, cape, cmap='hot_r', colorbar=True, **kwargs):
@@ -151,14 +275,14 @@ def plot_cape(ax, cape, cmap='hot_r', colorbar=True, **kwargs):
     levels = np.array([0, 250, 500, 1000, 1500, 2000, 3000, 4000, 5000])
     return plot_field(ax, cape, 'SBCAPE (J/kg)', cmap=cmap,
                       vmin=0, vmax=5000, colorbar=colorbar,
-                      cb_label='CAPE (J/kg)', discrete_levels=levels)
+                      cb_label='CAPE (J/kg)', discrete_levels=levels, **kwargs)
 
 
 def plot_reflectivity(ax, refc, cmap='turbo', colorbar=True, **kwargs):
     """Plot composite reflectivity with cartopy."""
     return plot_field(ax, refc, 'Composite Reflectivity (dBZ)', cmap=cmap,
                       vmin=-10, vmax=75, colorbar=colorbar,
-                      cb_label='dBZ')
+                      cb_label='dBZ', **kwargs)
 
 
 def plot_srh(ax, srh, cmap='BuPu', colorbar=True, **kwargs):
@@ -167,7 +291,7 @@ def plot_srh(ax, srh, cmap='BuPu', colorbar=True, **kwargs):
     return plot_field(ax, srh, '0-3km SRH (m2/s2)', cmap=cmap,
                       vmin=0, vmax=500, colorbar=colorbar,
                       cb_label='SRH (m\u00b2/s\u00b2)', discrete_levels=levels,
-                      extend='max')
+                      extend='max', **kwargs)
 
 
 def plot_shear(ax, shear, cmap='YlOrRd', colorbar=True, **kwargs):
@@ -176,7 +300,7 @@ def plot_shear(ax, shear, cmap='YlOrRd', colorbar=True, **kwargs):
     return plot_field(ax, shear, '0-6km Bulk Shear (m/s)', cmap=cmap,
                       vmin=0, vmax=40, colorbar=colorbar,
                       cb_label='Shear (m/s)', discrete_levels=levels,
-                      extend='max')
+                      extend='max', **kwargs)
 
 
 def plot_stp(ax, stp, cmap='RdPu', colorbar=True, **kwargs):
@@ -185,7 +309,7 @@ def plot_stp(ax, stp, cmap='RdPu', colorbar=True, **kwargs):
     return plot_field(ax, stp, 'STP', cmap=cmap,
                       vmin=0, vmax=10, colorbar=colorbar,
                       cb_label='STP', discrete_levels=levels,
-                      extend='max')
+                      extend='max', **kwargs)
 
 
 def plot_theta_e(ax, t2m, td2m, p_sfc=1013.0, cmap='magma', colorbar=True, **kwargs):
@@ -199,7 +323,7 @@ def plot_theta_e(ax, t2m, td2m, p_sfc=1013.0, cmap='magma', colorbar=True, **kwa
         cp.full(n, p_sfc), t_gpu, td_gpu)).reshape(t.shape)
     cp.get_default_memory_pool().free_all_blocks()
     return plot_field(ax, theta_e, 'Theta-E (K)', cmap=cmap,
-                      colorbar=colorbar, cb_label='Theta-E (K)')
+                      colorbar=colorbar, cb_label='Theta-E (K)', **kwargs)
 
 
 def plot_vorticity(ax, u, v, dx=3000.0, dy=3000.0, cmap='RdBu_r', colorbar=True, **kwargs):
@@ -211,7 +335,7 @@ def plot_vorticity(ax, u, v, dx=3000.0, dy=3000.0, cmap='RdBu_r', colorbar=True,
     cp.get_default_memory_pool().free_all_blocks()
     return plot_field(ax, vort, 'Vorticity (x10\u207b\u2075 /s)', cmap=cmap,
                       vmin=-30, vmax=30, colorbar=colorbar,
-                      cb_label='Vorticity (x10\u207b\u2075 /s)')
+                      cb_label='Vorticity (x10\u207b\u2075 /s)', **kwargs)
 
 
 def plot_frontogenesis(ax, t, u, v, dx=3000.0, dy=3000.0, cmap='RdBu_r', colorbar=True, **kwargs):
@@ -225,7 +349,7 @@ def plot_frontogenesis(ax, t, u, v, dx=3000.0, dy=3000.0, cmap='RdBu_r', colorba
     cp.get_default_memory_pool().free_all_blocks()
     return plot_field(ax, fronto, 'Frontogenesis (x10\u207b\u2079 K/m/s)', cmap=cmap,
                       colorbar=colorbar,
-                      cb_label='Frontogenesis (x10\u207b\u2079 K/m/s)')
+                      cb_label='Frontogenesis (x10\u207b\u2079 K/m/s)', **kwargs)
 
 
 def plot_wind_speed(ax, u, v, cmap='YlOrRd', knots=True, colorbar=True, **kwargs):
@@ -241,13 +365,13 @@ def plot_wind_speed(ax, u, v, cmap='YlOrRd', knots=True, colorbar=True, **kwargs
     return plot_field(ax, wspd, label, cmap=cmap,
                       vmin=0, vmax=40, colorbar=colorbar,
                       cb_label=label, discrete_levels=levels,
-                      extend='max')
+                      extend='max', **kwargs)
 
 
 def plot_pwat(ax, pwat, cmap='GnBu', colorbar=True, **kwargs):
     """Plot precipitable water with cartopy."""
     return plot_field(ax, pwat, 'PWAT (mm)', cmap=cmap,
-                      colorbar=colorbar, cb_label='PWAT (mm)')
+                      colorbar=colorbar, cb_label='PWAT (mm)', **kwargs)
 
 
 def mesoanalysis_cartopy(fields, title='', figsize=(24, 16), dpi=120, save=None):
@@ -268,13 +392,9 @@ def mesoanalysis_cartopy(fields, title='', figsize=(24, 16), dpi=120, save=None)
                              subplot_kw={'projection': proj})
     fig.patch.set_facecolor('#1a1a2e')
 
-    ny = nx = None
-    for key in ('t2m', 'td2m', 'cape', 'refc'):
-        if key in fields and fields[key] is not None:
-            ny, nx = fields[key].shape
-            break
-    if ny is None:
-        raise ValueError("No valid 2D fields found")
+    ny, nx = _infer_field_shape(fields)
+    lats, lons = _extract_geo_grid(fields, (ny, nx))
+    geo_kwargs = {'lats': lats, 'lons': lons} if lats is not None else {}
     n = ny * nx
 
     t2m = fields.get('t2m', np.zeros((ny, nx)))
@@ -283,14 +403,14 @@ def mesoanalysis_cartopy(fields, title='', figsize=(24, 16), dpi=120, save=None)
     v10 = fields.get('v10', np.zeros((ny, nx)))
 
     # Row 1: Temp, Dewpoint, CAPE, Reflectivity
-    plot_temperature(axes[0, 0], t2m)
-    plot_dewpoint(axes[0, 1], td2m)
-    plot_cape(axes[0, 2], fields.get('cape', np.zeros((ny, nx))))
-    plot_reflectivity(axes[0, 3], fields.get('refc', np.zeros((ny, nx))))
+    plot_temperature(axes[0, 0], t2m, **geo_kwargs)
+    plot_dewpoint(axes[0, 1], td2m, **geo_kwargs)
+    plot_cape(axes[0, 2], fields.get('cape', np.zeros((ny, nx))), **geo_kwargs)
+    plot_reflectivity(axes[0, 3], fields.get('refc', np.zeros((ny, nx))), **geo_kwargs)
 
     # Row 2: SRH, Shear, STP, Theta-E
-    plot_srh(axes[1, 0], fields.get('srh3', np.zeros((ny, nx))))
-    plot_shear(axes[1, 1], fields.get('shear', np.zeros((ny, nx))))
+    plot_srh(axes[1, 0], fields.get('srh3', np.zeros((ny, nx))), **geo_kwargs)
+    plot_shear(axes[1, 1], fields.get('shear', np.zeros((ny, nx))), **geo_kwargs)
     stp = fields.get('stp')
     if stp is None:
         cape = fields.get('cape', np.zeros((ny, nx)))
@@ -307,14 +427,14 @@ def mesoanalysis_cartopy(fields, title='', figsize=(24, 16), dpi=120, save=None)
             cp.asarray(srh1.ravel().astype(np.float64)),
             cp.asarray(shear.ravel().astype(np.float64)))).reshape(ny, nx)
         cp.get_default_memory_pool().free_all_blocks()
-    plot_stp(axes[1, 2], stp)
-    plot_theta_e(axes[1, 3], t2m, td2m)
+    plot_stp(axes[1, 2], stp, **geo_kwargs)
+    plot_theta_e(axes[1, 3], t2m, td2m, **geo_kwargs)
 
     # Row 3: PWAT, Vorticity, Frontogenesis, Wind Speed
-    plot_pwat(axes[2, 0], fields.get('pwat', np.zeros((ny, nx))))
-    plot_vorticity(axes[2, 1], u10, v10)
-    plot_frontogenesis(axes[2, 2], t2m, u10, v10)
-    plot_wind_speed(axes[2, 3], u10, v10)
+    plot_pwat(axes[2, 0], fields.get('pwat', np.zeros((ny, nx))), **geo_kwargs)
+    plot_vorticity(axes[2, 1], u10, v10, **geo_kwargs)
+    plot_frontogenesis(axes[2, 2], t2m, u10, v10, **geo_kwargs)
+    plot_wind_speed(axes[2, 3], u10, v10, **geo_kwargs)
 
     for ax in axes.flat:
         ax.set_facecolor('#1a1a2e')
@@ -368,9 +488,8 @@ def _get_map_overlay(panel_w, panel_h, extent=(-125, -66, 23, 50)):
     fig_w = panel_w / dpi
     fig_h = panel_h / dpi
 
-    proj = ccrs.LambertConformal(central_longitude=-96, standard_parallels=(33, 45))
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
-    ax = fig.add_axes([0, 0, 1, 1], projection=proj)
+    ax = fig.add_axes([0, 0, 1, 1], projection=_LAMBERT)
     ax.set_extent(list(extent), crs=ccrs.PlateCarree())
     ax.add_feature(cfeature.NaturalEarthFeature(
         'cultural', 'admin_1_states_provinces_lines', '50m',
@@ -397,13 +516,7 @@ def _compute_all_panels(fields):
 
     Returns list of (data_2d, title, cmap_name, vmin, vmax, cb_label).
     """
-    ny = nx = None
-    for key in ('t2m', 'td2m', 'cape', 'refc'):
-        if key in fields and fields[key] is not None:
-            ny, nx = fields[key].shape
-            break
-    if ny is None:
-        raise ValueError("No valid 2D fields found")
+    ny, nx = _infer_field_shape(fields)
     n = ny * nx
 
     _z = np.zeros((ny, nx))
@@ -466,7 +579,7 @@ def _compute_all_panels(fields):
     ]
 
 
-def mesoanalysis_fast(fields, title='', save=None, dpi=150, figsize=(22, 13)):
+def _mesoanalysis_fast_legacy(fields, title='', save=None):
     """12-panel mesoanalysis using cached map overlays.
 
     First call: ~8s (renders 12 map overlays to transparent PNGs).
@@ -480,14 +593,8 @@ def mesoanalysis_fast(fields, title='', save=None, dpi=150, figsize=(22, 13)):
         Suptitle text (e.g. 'HRRR 2026-03-28 18:00 F06').
     save : str or None
         Path to save the output PNG.
-    dpi : int
-        Ignored (kept for API compat); panel sizes are fixed in pixels.
-    figsize : tuple
-        Ignored (kept for API compat).
-
-    Returns
-    -------
-    PIL.Image.Image (RGBA)
+    This legacy compositor is fast, but it assumes an image-like HRRR extent.
+    Use the cartopy path when exact geographic alignment matters.
     """
     # Panel layout
     cols, rows = 4, 3
@@ -565,13 +672,29 @@ def mesoanalysis_fast(fields, title='', save=None, dpi=150, figsize=(22, 13)):
     return composite
 
 
+def mesoanalysis_fast(fields, title='', save=None, dpi=150, figsize=(22, 13)):
+    """12-panel mesoanalysis with accuracy-first behavior on a geogrid.
+
+    If `fields` includes 2D latitude/longitude arrays, this function uses the
+    cartopy path so the Lambert grid is rendered correctly.  Otherwise it falls
+    back to the legacy cached-overlay compositor for speed.
+    """
+    ny, nx = _infer_field_shape(fields)
+    lats, lons = _extract_geo_grid(fields, (ny, nx))
+    if lats is None or lons is None:
+        return _mesoanalysis_fast_legacy(fields, title=title, save=save)
+
+    fig = mesoanalysis_cartopy(fields, title=title, figsize=figsize, dpi=dpi, save=None)
+    return _figure_to_image(fig, dpi=dpi, save=save)
+
+
 # Default mesoanalysis points to the fast path
 mesoanalysis = mesoanalysis_fast
 
 
 def single_plot(data, title, cmap='RdYlBu_r', vmin=None, vmax=None,
                 cb_label=None, save=None, dpi=200, figsize=(14, 9),
-                discrete_levels=None, extend='both'):
+                discrete_levels=None, extend='both', lats=None, lons=None):
     """Single high-resolution map with cartopy.
 
     Parameters
@@ -606,7 +729,8 @@ def single_plot(data, title, cmap='RdYlBu_r', vmin=None, vmax=None,
 
     plot_field(ax, data, title, cmap=cmap, vmin=vmin, vmax=vmax,
                colorbar=True, cb_label=cb_label,
-               discrete_levels=discrete_levels, extend=extend)
+               discrete_levels=discrete_levels, extend=extend,
+               lats=lats, lons=lons)
 
     fig.tight_layout()
 

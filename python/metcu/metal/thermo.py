@@ -1965,9 +1965,8 @@ kernel void heat_index_kernel(
     float rh = relative_humidity[tid];
     float hi_f;
     float steadman = 0.5f * (t_f + 61.0f + (t_f - 68.0f) * 1.2f + rh * 0.094f);
-    float hi_avg = (steadman + t_f) / 2.0f;
-    if (hi_avg < 80.0f) {
-        hi_f = hi_avg;
+    if (t_f < 80.0f) {
+        hi_f = steadman;
     } else {
         hi_f = -42.379f
             + 2.04901523f * t_f

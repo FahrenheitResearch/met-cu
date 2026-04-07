@@ -37,8 +37,12 @@ def get_field(H, search):
         if isinstance(ds, list):
             ds = ds[0]
         var = [v for v in ds.data_vars if ds[v].ndim >= 2]
-        if var:
-            return ds[var[0]].values
+        try:
+            return ds[var[0]].values.copy() if var else None
+        finally:
+            close = getattr(ds, "close", None)
+            if close is not None:
+                close()
     except Exception:
         pass
     return None
@@ -50,9 +54,35 @@ def get_latlon(H, search):
         ds = H.xarray(search)
         if isinstance(ds, list):
             ds = ds[0]
-        return ds.latitude.values, ds.longitude.values
+        try:
+            return ds.latitude.values.copy(), ds.longitude.values.copy()
+        finally:
+            close = getattr(ds, "close", None)
+            if close is not None:
+                close()
     except Exception:
         return None, None
+
+
+def get_prs_levels(search):
+    """Read a full isobaric stack with a fresh Herbie instance to avoid file locks."""
+    H = Herbie(DATETIME, model="hrrr", product="prs", fxx=0, verbose=False)
+    ds = H.xarray(
+        search + ".*mb",
+        backend_kwargs={"filter_by_keys": {"typeOfLevel": "isobaricInhPa"}},
+    )
+    if isinstance(ds, list):
+        ds = ds[0]
+    try:
+        var = list(ds.data_vars)[0]
+        pres_coord = [c for c in ds.coords if "isobaric" in c.lower()][0]
+        values = ds[var].values.copy()
+        plevs = ds[pres_coord].values.copy()
+    finally:
+        close = getattr(ds, "close", None)
+        if close is not None:
+            close()
+    return values, plevs
 
 
 # Pre-computed GRIB fields
@@ -76,19 +106,11 @@ prs_data = {}
 prs_levels = {}
 
 for search in levels_to_get:
-    ds = H_prs.xarray(
-        search + ".*mb",
-        backend_kwargs={"filter_by_keys": {"typeOfLevel": "isobaricInhPa"}},
-    )
-    if isinstance(ds, list):
-        ds = ds[0]
-    var = list(ds.data_vars)[0]
-    pres_coord = [c for c in ds.coords if "isobaric" in c.lower()][0]
-    plevs = ds[pres_coord].values
+    values, plevs = get_prs_levels(search)
     if plevs.max() > 2000:
         plevs = plevs / 100.0
     sort_idx = np.argsort(plevs)[::-1]
-    prs_data[search] = ds[var].values[sort_idx]
+    prs_data[search] = values[sort_idx]
     prs_levels[search] = plevs[sort_idx]
     print(f"    {search}: {len(plevs)} levels, {plevs.min():.0f}-{plevs.max():.0f} hPa")
 

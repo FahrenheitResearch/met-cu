@@ -1020,11 +1020,11 @@ heat_index_kernel = cp.ElementwiseKernel(
     double t_f = temperature * 9.0 / 5.0 + 32.0;
     double rh = relative_humidity;
     double hi_f;
-    /* NWS two-step: compute Steadman, average with T, then decide */
+    /* Match metrust: below 80F return the simple Steadman approximation,
+       otherwise use Rothfusz plus the standard low/high-RH adjustments. */
     double steadman = 0.5 * (t_f + 61.0 + (t_f - 68.0) * 1.2 + rh * 0.094);
-    double hi_avg = (steadman + t_f) / 2.0;
-    if (hi_avg < 80.0) {
-        hi_f = hi_avg;
+    if (t_f < 80.0) {
+        hi_f = steadman;
     } else {
         hi_f = -42.379
             + 2.04901523 * t_f
@@ -1449,13 +1449,13 @@ void cape_cin_kernel(
     bool in_pos_layer = false;
     int start_idx = 0;
     for (int k = 0; k < nlev; k++) {
-        if (p_lev[k] <= p_lcl) {
+        if (pressure[k] <= p_lcl) {
             start_idx = k;
             break;
         }
     }
     for (int k = start_idx; k < nlev; k++) {
-        double p_curr = p_lev[k];
+        double p_curr = pressure[k];
         double tv_env_geom = tv_env[k];
         double t_parc_geom = satlift(p_curr, thetam);
         double tv_parc_geom = virtual_temp(t_parc_geom, p_curr, t_parc_geom);
@@ -1464,7 +1464,7 @@ void cape_cin_kernel(
             if (!in_pos_layer) {
                 in_pos_layer = true;
                 if (k > 0) {
-                    double p_prev = p_lev[k - 1];
+                    double p_prev = pressure[k - 1];
                     double tv_env_prev = tv_env[k - 1];
                     double t_parc_prev = satlift(p_prev, thetam);
                     double tv_parc_prev = virtual_temp(t_parc_prev, p_prev, t_parc_prev);
@@ -1484,6 +1484,7 @@ void cape_cin_kernel(
             in_pos_layer = false;
         }
     }
+    (void)lfc_p_geom; (void)found_positive_layer;  // diagnostic-only
 
     // 3. Find the LAST negative->positive buoyancy crossing (the true LFC)
     int last_lfc_idx = -1;

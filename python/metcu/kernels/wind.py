@@ -931,20 +931,25 @@ _stp_ek = cp.ElementwiseKernel(
     "float64 cape, float64 lcl, float64 srh, float64 shear",
     "float64 stp",
     r"""
-    // STP = (CAPE/1500) * (SRH/150) * (shear/20) * ((2000-LCL)/1000) * ((200+CIN)/150)
-    // Simplified form without CIN (fixed-layer STP, MetPy convention)
-    double cape_term = cape / 1500.0;
-    double srh_term  = srh / 150.0;
-    double shear_term = shear / 20.0;
+    // Match metrust fixed-layer STP thresholds.
+    double cape_term = cape > 0.0 ? cape / 1500.0 : 0.0;
+    double srh_term  = srh > 0.0 ? srh / 150.0 : 0.0;
+    double shear_term;
+    if (shear < 12.5) {
+        shear_term = 0.0;
+    } else {
+        double shear_capped = shear > 30.0 ? 30.0 : shear;
+        shear_term = shear_capped / 20.0;
+    }
 
     // LCL term: clamped between 0 and 1
     double lcl_term;
-    if (lcl < 1000.0) {
+    if (lcl <= 1000.0) {
         lcl_term = 1.0;
-    } else if (lcl > 2000.0) {
-        lcl_term = 0.0;
     } else {
         lcl_term = (2000.0 - lcl) / 1000.0;
+        if (lcl_term < 0.0) lcl_term = 0.0;
+        if (lcl_term > 1.0) lcl_term = 1.0;
     }
 
     stp = cape_term * srh_term * shear_term * lcl_term;
@@ -970,8 +975,16 @@ _scp_ek = cp.ElementwiseKernel(
     "float64 mucape, float64 srh, float64 shear",
     "float64 scp",
     r"""
-    scp = (mucape / 1000.0) * (srh / 50.0) * (shear / 30.0);
-    if (scp < 0.0) scp = 0.0;
+    double cape_term = mucape > 0.0 ? mucape / 1000.0 : 0.0;
+    double srh_term = srh > 0.0 ? srh / 50.0 : 0.0;
+    double shear_term;
+    if (shear < 10.0) {
+        shear_term = 0.0;
+    } else {
+        double shear_capped = shear > 20.0 ? 20.0 : shear;
+        shear_term = shear_capped / 20.0;
+    }
+    scp = cape_term * srh_term * shear_term;
     """,
     "supercell_composite_parameter_kernel",
 )
@@ -1030,24 +1043,27 @@ def compute_ehi(cape, srh):
 
 # 21. compute_dcp ----------------------------------------------------------
 _dcp_ek = cp.ElementwiseKernel(
-    "float64 dcape, float64 cape, float64 shear, float64 mean_wind_val",
+    "float64 dcape, float64 cape, float64 shear, float64 mu_mixing_ratio",
     "float64 dcp",
     r"""
-    dcp = (dcape / 980.0) * (cape / 2000.0) * (shear / 20.0) * (mean_wind_val / 16.0);
-    if (dcp < 0.0) dcp = 0.0;
+    double dcape_term = dcape > 0.0 ? dcape / 980.0 : 0.0;
+    double cape_term = cape > 0.0 ? cape / 2000.0 : 0.0;
+    double shear_term = shear > 0.0 ? shear / 20.0 : 0.0;
+    double mr_term = mu_mixing_ratio > 0.0 ? mu_mixing_ratio / 11.0 : 0.0;
+    dcp = dcape_term * cape_term * shear_term * mr_term;
     """,
     "compute_dcp_kernel",
 )
 
 
-def compute_dcp(dcape, mu_cape, shear06, mean_wind_val):
+def compute_dcp(dcape, mu_cape, shear06, mu_mixing_ratio):
     """Derecho Composite Parameter.
 
-    DCP = (DCAPE/980) * (CAPE/2000) * (shear/20) * (mean_wind/16).
+    DCP = (DCAPE/980) * (MUCAPE/2000) * (SHEAR/20) * (MU_MIXING_RATIO/11).
     """
     return _dcp_ek(
         _to_cp(dcape), _to_cp(mu_cape),
-        _to_cp(shear06), _to_cp(mean_wind_val),
+        _to_cp(shear06), _to_cp(mu_mixing_ratio),
     )
 
 
@@ -1471,15 +1487,15 @@ _haines_ek = cp.ElementwiseKernel(
     // Stability term (A): T950 - T850
     double delta_t = t950 - t850;
     double a;
-    if (delta_t < 4.0) a = 1.0;
-    else if (delta_t < 8.0) a = 2.0;
+    if (delta_t <= 3.0) a = 1.0;
+    else if (delta_t <= 7.0) a = 2.0;
     else a = 3.0;
 
     // Moisture term (B): T850 - Td850
     double delta_td = t850 - td850;
     double b;
-    if (delta_td < 6.0) b = 1.0;
-    else if (delta_td < 10.0) b = 2.0;
+    if (delta_td <= 5.0) b = 1.0;
+    else if (delta_td <= 9.0) b = 2.0;
     else b = 3.0;
 
     haines = a + b;
@@ -1506,8 +1522,13 @@ _hdw_ek = cp.ElementwiseKernel(
     if (vpd_in > 0.0) {
         vpd = vpd_in;
     } else {
-        // Compute VPD from T and RH
-        double es = 6.112 * exp(17.67 * temp_c / (temp_c + 243.5));
+        // Compute VPD from T and RH using the SHARPpy/Wexler SVP polynomial.
+        double pol = temp_c * (1.1112018e-17 + (temp_c * -3.0994571e-20));
+        pol = temp_c * (2.1874425e-13 + (temp_c * (-1.789232e-15 + pol)));
+        pol = temp_c * (4.3884180e-09 + (temp_c * (-2.988388e-11 + pol)));
+        pol = temp_c * (7.8736169e-05 + (temp_c * (-6.111796e-07 + pol)));
+        pol = 0.99999683 + (temp_c * (-9.082695e-03 + pol));
+        double es = 6.1078 / pow(pol, 8.0);
         double ea = es * rh / 100.0;
         vpd = es - ea;
     }

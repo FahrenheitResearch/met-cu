@@ -1176,17 +1176,23 @@ kernel void significant_tornado_parameter_kernel(
     uint i [[thread_position_in_grid]]
 ) {
     if (i >= uint(*n)) return;
-    float cape_term = cape[i] / 1500.0f;
-    float srh_term  = srh[i] / 150.0f;
-    float shear_term = shear[i] / 20.0f;
+    float cape_term = cape[i] > 0.0f ? cape[i] / 1500.0f : 0.0f;
+    float srh_term  = srh[i] > 0.0f ? srh[i] / 150.0f : 0.0f;
+    float shear_term;
+    if (shear[i] < 12.5f) {
+        shear_term = 0.0f;
+    } else {
+        float shear_capped = shear[i] > 30.0f ? 30.0f : shear[i];
+        shear_term = shear_capped / 20.0f;
+    }
 
     float lcl_term;
-    if (lcl[i] < 1000.0f) {
+    if (lcl[i] <= 1000.0f) {
         lcl_term = 1.0f;
-    } else if (lcl[i] > 2000.0f) {
-        lcl_term = 0.0f;
     } else {
         lcl_term = (2000.0f - lcl[i]) / 1000.0f;
+        if (lcl_term < 0.0f) lcl_term = 0.0f;
+        if (lcl_term > 1.0f) lcl_term = 1.0f;
     }
 
     float val = cape_term * srh_term * shear_term * lcl_term;
@@ -1233,8 +1239,16 @@ kernel void supercell_composite_parameter_kernel(
     uint i [[thread_position_in_grid]]
 ) {
     if (i >= uint(*n)) return;
-    float val = (mucape[i] / 1000.0f) * (srh[i] / 50.0f) * (shear[i] / 30.0f);
-    if (val < 0.0f) val = 0.0f;
+    float cape_term = mucape[i] > 0.0f ? mucape[i] / 1000.0f : 0.0f;
+    float srh_term = srh[i] > 0.0f ? srh[i] / 50.0f : 0.0f;
+    float shear_term;
+    if (shear[i] < 10.0f) {
+        shear_term = 0.0f;
+    } else {
+        float shear_capped = shear[i] > 20.0f ? 20.0f : shear[i];
+        shear_term = shear_capped / 20.0f;
+    }
+    float val = cape_term * srh_term * shear_term;
     scp[i] = val;
 }
 """
@@ -1355,37 +1369,40 @@ kernel void compute_dcp_kernel(
     device const float* dcape [[buffer(0)]],
     device const float* cape [[buffer(1)]],
     device const float* shear [[buffer(2)]],
-    device const float* mean_wind_val [[buffer(3)]],
+    device const float* mu_mixing_ratio [[buffer(3)]],
     device float* dcp [[buffer(4)]],
     device const int* n [[buffer(5)]],
     uint i [[thread_position_in_grid]]
 ) {
     if (i >= uint(*n)) return;
-    float val = (dcape[i] / 980.0f) * (cape[i] / 2000.0f) * (shear[i] / 20.0f) * (mean_wind_val[i] / 16.0f);
-    if (val < 0.0f) val = 0.0f;
+    float dcape_term = dcape[i] > 0.0f ? dcape[i] / 980.0f : 0.0f;
+    float cape_term = cape[i] > 0.0f ? cape[i] / 2000.0f : 0.0f;
+    float shear_term = shear[i] > 0.0f ? shear[i] / 20.0f : 0.0f;
+    float mr_term = mu_mixing_ratio[i] > 0.0f ? mu_mixing_ratio[i] / 11.0f : 0.0f;
+    float val = dcape_term * cape_term * shear_term * mr_term;
     dcp[i] = val;
 }
 """
 _dcp_compiled = None
 
 
-def compute_dcp(dcape, mu_cape, shear06, mean_wind_val):
+def compute_dcp(dcape, mu_cape, shear06, mu_mixing_ratio):
     """Derecho Composite Parameter.
 
-    DCP = (DCAPE/980) * (CAPE/2000) * (shear/20) * (mean_wind/16).
+    DCP = (DCAPE/980) * (MUCAPE/2000) * (SHEAR/20) * (MU_MIXING_RATIO/11).
     """
     global _dcp_compiled
     dev = metal_device()
     dc_d = _to_metal(dcape)
     mc_d = _to_metal(mu_cape)
     sh_d = _to_metal(shear06)
-    mw_d = _to_metal(mean_wind_val)
+    mr_d = _to_metal(mu_mixing_ratio)
     n = dc_d.size
     out = MetalArray(shape=dc_d.shape, _device=dev)
     if _dcp_compiled is None:
         _dcp_compiled = dev.compile(_dcp_source, "compute_dcp_kernel")
     _dcp_compiled.dispatch(
-        [dc_d, mc_d, sh_d, mw_d, out, _pack_int(n)],
+        [dc_d, mc_d, sh_d, mr_d, out, _pack_int(n)],
         grid_size=(n,), threadgroup_size=(min(_BLOCK, n),),
     )
     return out
@@ -2002,14 +2019,14 @@ kernel void haines_index_kernel(
 
     float delta_t = t950[i] - t850[i];
     float a;
-    if (delta_t < 4.0f) a = 1.0f;
-    else if (delta_t < 8.0f) a = 2.0f;
+    if (delta_t <= 3.0f) a = 1.0f;
+    else if (delta_t <= 7.0f) a = 2.0f;
     else a = 3.0f;
 
     float delta_td = t850[i] - td850[i];
     float b;
-    if (delta_td < 6.0f) b = 1.0f;
-    else if (delta_td < 10.0f) b = 2.0f;
+    if (delta_td <= 5.0f) b = 1.0f;
+    else if (delta_td <= 9.0f) b = 2.0f;
     else b = 3.0f;
 
     haines[i] = a + b;
@@ -2059,7 +2076,13 @@ kernel void hot_dry_windy_kernel(
     if (vpd_in[i] > 0.0f) {
         vpd = vpd_in[i];
     } else {
-        float es = 6.112f * exp(17.67f * temp_c[i] / (temp_c[i] + 243.5f));
+        float t = temp_c[i];
+        float pol = t * (1.1112018e-17f + (t * -3.0994571e-20f));
+        pol = t * (2.1874425e-13f + (t * (-1.789232e-15f + pol)));
+        pol = t * (4.3884180e-09f + (t * (-2.988388e-11f + pol)));
+        pol = t * (7.8736169e-05f + (t * (-6.111796e-07f + pol)));
+        pol = 0.99999683f + (t * (-9.082695e-03f + pol));
+        float es = 6.1078f / pow(pol, 8.0f);
         float ea = es * rh[i] / 100.0f;
         vpd = es - ea;
     }

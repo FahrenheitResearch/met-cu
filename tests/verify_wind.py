@@ -227,10 +227,11 @@ print(f"    Valid columns: {len(valid_idx):,}, testing {n_test}")
 # Helper to extract float from GPU/CPU results
 def _f(val):
     if hasattr(val, 'get'):
-        return float(cp.asnumpy(val))
+        val = cp.asnumpy(val)
     if hasattr(val, 'magnitude'):
-        return float(val.magnitude)
-    return float(val)
+        val = val.magnitude
+    arr = np.asarray(val, dtype=np.float64).reshape(-1)
+    return float(arr[0])
 
 # Collect results
 bs_gpu_u, bs_gpu_v, bs_cpu_u, bs_cpu_v = [], [], [], []

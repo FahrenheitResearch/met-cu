@@ -33,7 +33,33 @@ def get_field(H, search):
     if isinstance(ds, list):
         ds = ds[0]
     var = [v for v in ds.data_vars if ds[v].ndim >= 2]
-    return ds[var[0]].values if var else None
+    try:
+        return ds[var[0]].values.copy() if var else None
+    finally:
+        close = getattr(ds, "close", None)
+        if close is not None:
+            close()
+
+
+def get_prs_levels(search):
+    """Extract a full isobaric stack with a fresh Herbie instance to avoid file locks."""
+    H = Herbie("2026-03-27 18:00", model="hrrr", product="prs", fxx=0, verbose=False)
+    ds = H.xarray(
+        search + ".*mb",
+        backend_kwargs={"filter_by_keys": {"typeOfLevel": "isobaricInhPa"}},
+    )
+    if isinstance(ds, list):
+        ds = ds[0]
+    try:
+        var = list(ds.data_vars)[0]
+        pres_coord = [c for c in ds.coords if "isobaric" in c.lower()][0]
+        values = ds[var].values.copy()
+        plevs = ds[pres_coord].values.copy()
+    finally:
+        close = getattr(ds, "close", None)
+        if close is not None:
+            close()
+    return values, plevs
 
 
 # --- Read ALL isobaric levels for TMP and DPT at once ---
@@ -41,17 +67,11 @@ print("  Reading isobaric TMP / DPT / HGT profiles ...")
 prs_data = {}
 prs_levels = {}
 for search in [":TMP:", ":DPT:", ":HGT:"]:
-    ds = H_prs.xarray(search + ".*mb",
-                       backend_kwargs={"filter_by_keys": {"typeOfLevel": "isobaricInhPa"}})
-    if isinstance(ds, list):
-        ds = ds[0]
-    var = list(ds.data_vars)[0]
-    pres_coord = [c for c in ds.coords if "isobaric" in c.lower()][0]
-    plevs = ds[pres_coord].values
+    values, plevs = get_prs_levels(search)
     if plevs.max() > 2000:
         plevs = plevs / 100.0
     sort_idx = np.argsort(plevs)[::-1]
-    prs_data[search] = ds[var].values[sort_idx]
+    prs_data[search] = values[sort_idx]
     prs_levels[search] = plevs[sort_idx]
     print(f"    {search}: {len(plevs)} levels, {plevs.min():.0f}-{plevs.max():.0f} hPa")
 
@@ -245,10 +265,10 @@ for k in range(n_test):
     td_col = td_3d[:, iy[k], ix[k]].copy()
     # met-cu:  precipitable_water(pressure_hPa, dewpoint_C) -> mm
     gval = metcu.precipitable_water(p_levels, td_col)
-    gpu_pw[k] = float(to_np(gval))
+    gpu_pw[k] = float(np.asarray(to_np(gval), dtype=np.float64).reshape(-1)[0])
     # metrust: precipitable_water(pressure_hPa, dewpoint_C) -> Quantity(mm)
     cval = mr.precipitable_water(p_levels, td_col)
-    cpu_pw[k] = float(to_np(cval))
+    cpu_pw[k] = float(np.asarray(to_np(cval), dtype=np.float64).reshape(-1)[0])
 
 try:
     np.testing.assert_allclose(gpu_pw, cpu_pw, rtol=1e-4, atol=0.01)

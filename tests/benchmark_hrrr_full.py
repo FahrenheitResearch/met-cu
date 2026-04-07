@@ -118,16 +118,17 @@ def bench(name, gpu_fn, cpu_fn, warmup=3, iters=5, verify=True):
             gpu_times.append(time.perf_counter() - t0)
         gpu_ms = min(gpu_times) * 1000
 
-        # CPU timing
-        cpu_times = []
+        cpu_ms = None
         cpu_result = None
-        for _ in range(iters):
-            t0 = time.perf_counter()
-            cpu_result = cpu_fn()
-            cpu_times.append(time.perf_counter() - t0)
-        cpu_ms = min(cpu_times) * 1000
-
-        speedup = cpu_ms / gpu_ms if gpu_ms > 0.01 else 0
+        speedup = None
+        if cpu_fn is not None:
+            cpu_times = []
+            for _ in range(iters):
+                t0 = time.perf_counter()
+                cpu_result = cpu_fn()
+                cpu_times.append(time.perf_counter() - t0)
+            cpu_ms = min(cpu_times) * 1000
+            speedup = cpu_ms / gpu_ms if gpu_ms > 0.01 else 0
 
         # Verify accuracy
         acc = ""
@@ -153,7 +154,9 @@ def bench(name, gpu_fn, cpu_fn, warmup=3, iters=5, verify=True):
 
         results.append((name, gpu_ms, cpu_ms, speedup, acc))
         status = "OK" if acc in ("PASS", "", "ERR") else "!!"
-        print(f"  {status:2s} {name:45s} GPU:{gpu_ms:9.2f}ms CPU:{cpu_ms:9.2f}ms {speedup:8.1f}x  {acc}")
+        cpu_text = f"{cpu_ms:9.2f}ms" if cpu_ms is not None else f"{'--':>9s}"
+        speed_text = f"{speedup:8.1f}x" if speedup is not None else f"{'--':>8s}"
+        print(f"  {status:2s} {name:45s} GPU:{gpu_ms:9.2f}ms CPU:{cpu_text} {speed_text}  {acc}")
 
     except Exception as e:
         results.append((name, 0, 0, 0, f"FAIL:{str(e)[:40]}"))
@@ -163,9 +166,9 @@ def bench(name, gpu_fn, cpu_fn, warmup=3, iters=5, verify=True):
 # ═══════════════════════════════════════════════════════════════════
 # CATEGORY 1: Per-element surface (N=1.9M)
 # ═══════════════════════════════════════════════════════════════════
-print("─" * 80)
+print("-" * 80)
 print("  PER-ELEMENT SURFACE (1,905,141 points)")
-print("─" * 80)
+print("-" * 80)
 
 bench("potential_temperature",
     lambda: metcu.potential_temperature(p_sfc, t_sfc),
@@ -188,8 +191,8 @@ bench("dewpoint_from_rh",
     lambda: mr.dewpoint_from_relative_humidity(t_sfc * units.degC, rh_sfc * units.percent))
 
 bench("virtual_temperature",
-    lambda: metcu.virtual_temperature(t_sfc, td_sfc, p_sfc),
-    lambda: mr.virtual_temperature_from_dewpoint(t_sfc * units.degC, td_sfc * units.degC, p_sfc * units.hPa))
+    lambda: metcu.virtual_temperature(t_sfc, p_sfc, td_sfc),
+    lambda: mr.virtual_temperature_from_dewpoint(p_sfc * units.hPa, t_sfc * units.degC, td_sfc * units.degC))
 
 bench("wet_bulb_temperature",
     lambda: metcu.wet_bulb_temperature(p_sfc, t_sfc, td_sfc),
@@ -215,47 +218,47 @@ bench("wind_direction",
 # CATEGORY 2: Stability indices (N=1.9M — one per grid point)
 # ═══════════════════════════════════════════════════════════════════
 print()
-print("─" * 80)
+print("-" * 80)
 print("  STABILITY INDICES (1,905,141 points)")
-print("─" * 80)
+print("-" * 80)
 
 bench("k_index",
     lambda: metcu.k_index(t850, td850, t700, td700, t500),
-    lambda: mr.k_index(t850 * units.degC, td850 * units.degC, t700 * units.degC, td700 * units.degC, t500 * units.degC),
+    None,
     verify=False)
 
 bench("total_totals",
     lambda: metcu.total_totals(t850, td850, t500),
-    lambda: mr.total_totals(t850 * units.degC, td850 * units.degC, t500 * units.degC),
+    None,
     verify=False)
 
 bench("cross_totals",
     lambda: metcu.cross_totals(td850, t500),
-    lambda: mr.cross_totals(td850 * units.degC, t500 * units.degC),
+    None,
     verify=False)
 
 bench("vertical_totals",
     lambda: metcu.vertical_totals(t850, t500),
-    lambda: mr.vertical_totals(t850 * units.degC, t500 * units.degC),
+    None,
     verify=False)
 
 bench("fosberg_fire_weather_index",
     lambda: metcu.fosberg_fire_weather_index(t_sfc, rh_sfc, np.sqrt(u_sfc**2 + v_sfc**2)),
-    lambda: mr.fosberg_fire_weather_index(t_sfc * units.degC, rh_sfc * units.percent, np.sqrt(u_sfc**2 + v_sfc**2) * units('m/s')),
+    None,
     verify=False)
 
 bench("hot_dry_windy",
     lambda: metcu.hot_dry_windy(t_sfc, rh_sfc, np.sqrt(u_sfc**2 + v_sfc**2)),
-    lambda: mr.hot_dry_windy(t_sfc * units.degC, rh_sfc * units.percent, np.sqrt(u_sfc**2 + v_sfc**2) * units('m/s')),
+    None,
     verify=False)
 
 # ═══════════════════════════════════════════════════════════════════
 # CATEGORY 3: Grid stencils (1059 x 1799)
 # ═══════════════════════════════════════════════════════════════════
 print()
-print("─" * 80)
+print("-" * 80)
 print("  GRID STENCILS (1059 x 1799)")
-print("─" * 80)
+print("-" * 80)
 
 bench("vorticity",
     lambda: metcu.vorticity(u_grid, v_grid, dx=dx, dy=dy),
@@ -307,9 +310,9 @@ bench("total_deformation",
 # These are the critical ones — STP, SCP, SHIP, EHI at every point
 # ═══════════════════════════════════════════════════════════════════
 print()
-print("─" * 80)
+print("-" * 80)
 print("  SEVERE WEATHER COMPOSITES (1,905,141 points)")
-print("─" * 80)
+print("-" * 80)
 
 # Pre-compute some needed fields for composites
 cape_vals = np.clip(np.random.exponential(500, N), 0, 5000)
@@ -321,26 +324,23 @@ shear_mag = np.sqrt(shear_u**2 + shear_v**2)
 lcl_heights = np.clip(np.random.randn(N) * 500 + 1500, 200, 4000)
 lr_850_500 = np.clip(np.random.randn(N) * 1.5 + 6.5, 3, 10)
 frz_level = np.clip(np.random.randn(N) * 500 + 3500, 1000, 6000)
+mixing_ratio_gkg = np.clip(np.random.randn(N) * 3 + 12, 2, 20)
 mucape = cape_vals * 1.1
 dcape_vals = np.clip(np.random.exponential(400, N), 0, 2000)
-mean_wind_speed = np.clip(np.random.randn(N) * 5 + 12, 2, 30)
 
 bench("significant_tornado_parameter (1.9M)",
-    lambda: metcu.significant_tornado_parameter(cape_vals, srh_vals, shear_mag, lcl_heights, cin_vals),
-    lambda: mr.significant_tornado_parameter(
-        cape_vals * units('J/kg'), srh_vals * units('m^2/s^2'),
-        shear_mag * units('m/s'), lcl_heights * units.meter, cin_vals * units('J/kg')),
+    lambda: metcu.significant_tornado_parameter(cape_vals, lcl_heights, srh_vals, shear_mag),
+    None,
     verify=False)
 
 bench("supercell_composite_parameter (1.9M)",
     lambda: metcu.supercell_composite_parameter(cape_vals, srh_vals, shear_mag),
-    lambda: mr.supercell_composite_parameter(
-        cape_vals * units('J/kg'), srh_vals * units('m^2/s^2'), shear_mag * units('m/s')),
+    None,
     verify=False)
 
 bench("bulk_richardson_number (1.9M)",
     lambda: metcu.bulk_richardson_number(cape_vals, shear_mag),
-    lambda: mr.bulk_richardson_number(cape_vals * units('J/kg'), shear_mag * units('m/s')),
+    None,
     verify=False)
 
 bench("compute_ehi (1.9M)",
@@ -350,18 +350,18 @@ bench("compute_ehi (1.9M)",
 
 bench("compute_ship (1.9M)",
     lambda: metcu.compute_ship(mucape.reshape(NY, NX), shear_mag.reshape(NY, NX),
-                                lr_850_500.reshape(NY, NX), t500.reshape(NY, NX),
-                                frz_level.reshape(NY, NX)),
+                                t500.reshape(NY, NX), lr_850_500.reshape(NY, NX),
+                                mixing_ratio_gkg.reshape(NY, NX)),
     lambda: mr.compute_ship(mucape.reshape(NY, NX), shear_mag.reshape(NY, NX),
-                             lr_850_500.reshape(NY, NX), t500.reshape(NY, NX),
-                             frz_level.reshape(NY, NX)),
+                             t500.reshape(NY, NX), lr_850_500.reshape(NY, NX),
+                             mixing_ratio_gkg.reshape(NY, NX)),
     verify=False)
 
 bench("compute_dcp (1.9M)",
     lambda: metcu.compute_dcp(dcape_vals.reshape(NY, NX), cape_vals.reshape(NY, NX),
-                               shear_mag.reshape(NY, NX), mean_wind_speed.reshape(NY, NX)),
+                               shear_mag.reshape(NY, NX), mixing_ratio_gkg.reshape(NY, NX)),
     lambda: mr.compute_dcp(dcape_vals.reshape(NY, NX), cape_vals.reshape(NY, NX),
-                            shear_mag.reshape(NY, NX), mean_wind_speed.reshape(NY, NX)),
+                            shear_mag.reshape(NY, NX), mixing_ratio_gkg.reshape(NY, NX)),
     verify=False)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -370,20 +370,29 @@ bench("compute_dcp (1.9M)",
 # so we test meaningful subsets
 # ═══════════════════════════════════════════════════════════════════
 print()
-print("─" * 80)
+print("-" * 80)
 print("  COLUMN OPERATIONS (batch sounding profiles)")
-print("─" * 80)
+print("-" * 80)
 
 for batch_label, batch_n in [("10K columns", 10000), ("100K columns", 100000), ("500K columns", 500000)]:
     t_batch = t_3d[:batch_n]
     td_batch = td_3d[:batch_n]
     h_batch = h_3d[:batch_n]
+    p_batch = np.broadcast_to(p_levels, (batch_n, NLEVELS))
+    es_td = 6.112 * np.exp(17.67 * td_batch / (td_batch + 243.5))
+    q_batch = 0.6219569100577033 * es_td / (p_batch - es_td)
+    psfc_batch = p_batch[:, 0]
+    t2_batch = t_batch[:, 0]
+    q2_batch = q_batch[:, 0]
 
     # GPU batch CAPE
     try:
         bench(f"cape_cin ({batch_label})",
-            lambda: metcu.cape_cin(p_levels, t_batch, td_batch),
-            lambda: None,  # CPU too slow for batch
+            lambda: metcu.compute_cape_cin(
+                p_batch, t_batch, q_batch, h_batch,
+                psfc_batch, t2_batch, q2_batch,
+            ),
+            None,  # CPU too slow for batch
             verify=False, warmup=2, iters=3)
     except Exception as e:
         print(f"  !! cape_cin ({batch_label}): {e}")
@@ -391,7 +400,7 @@ for batch_label, batch_n in [("10K columns", 10000), ("100K columns", 100000), (
     try:
         bench(f"precipitable_water ({batch_label})",
             lambda: metcu.precipitable_water(p_levels, td_batch),
-            lambda: None,
+            None,
             verify=False, warmup=2, iters=3)
     except Exception as e:
         print(f"  !! precipitable_water ({batch_label}): {e}")
@@ -413,7 +422,7 @@ categories = {
 }
 
 for name, gpu_ms, cpu_ms, speedup, acc in results:
-    if speedup == 0:
+    if speedup in (None, 0):
         continue
     if "stencil" in name.lower() or name in ("vorticity", "divergence", "advection",
         "frontogenesis", "smooth_gaussian (sigma=3)", "smooth_n_point (9-point)",
@@ -432,12 +441,12 @@ for name, gpu_ms, cpu_ms, speedup, acc in results:
         categories["Per-element surface"].append(speedup)
 
 print(f"\n  {'Category':30s} {'Avg Speedup':>12s} {'Max Speedup':>12s} {'Count':>6s}")
-print(f"  {'─' * 65}")
+print(f"  {'-' * 65}")
 for cat, speeds in categories.items():
     if speeds:
         print(f"  {cat:30s} {np.mean(speeds):11.1f}x {max(speeds):11.1f}x {len(speeds):5d}")
 
-all_speeds = [s for s in [r[3] for r in results] if s > 0]
+all_speeds = [s for s in [r[3] for r in results] if s is not None and s > 0]
 if all_speeds:
     print(f"\n  Overall: avg {np.mean(all_speeds):.1f}x, median {np.median(all_speeds):.1f}x, max {max(all_speeds):.1f}x")
     print(f"  Functions tested: {len(results)}")

@@ -19,6 +19,7 @@ Unit conventions (same as metrust)
 - Angles:  degrees
 """
 
+import inspect
 import numpy as np
 from metcu.backend import get_backend, Backend
 import metcu.gpu_ops as cp  # backend-agnostic GPU operations
@@ -1510,7 +1511,11 @@ def _from_metrust_result(value):
     if isinstance(value, cp.ndarray):
         return value
     if isinstance(value, np.ndarray):
+        if value.dtype.kind in "OUSbiu":
+            return value
         return cp.asarray(value, dtype=cp.float64)
+    if isinstance(value, (str, bytes, np.str_, np.bytes_)):
+        return value
     if np.isscalar(value):
         return float(value)
     return value
@@ -1527,6 +1532,70 @@ def _metrust_gpu_fallback(function_name, *args, **kwargs):
         **{key: _to_metrust_input(val) for key, val in kwargs.items()},
     )
     return _from_metrust_result(result)
+
+
+def _metpy_gpu_fallback(function_name, *args, **kwargs):
+    """Call the MetPy reference implementation and move results back to GPU."""
+    try:
+        import metpy.calc as _mp
+    except ImportError as exc:
+        raise NotImplementedError(f"{function_name} requires metpy") from exc
+    result = getattr(_mp, function_name)(
+        *[_to_metrust_input(arg) for arg in args],
+        **{key: _to_metrust_input(val) for key, val in kwargs.items()},
+    )
+    return _from_metrust_result(result)
+
+
+def _has_metpy_inputs(*values):
+    for value in values:
+        if isinstance(value, (tuple, list)):
+            if _has_metpy_inputs(*value):
+                return True
+            continue
+        if hasattr(value, "to") or hasattr(value, "units") or hasattr(value, "metpy"):
+            return True
+    return False
+
+
+def _rh_percent_value(relative_humidity):
+    rh = _to_gpu(relative_humidity)
+    try:
+        rh_max = float(cp.nanmax(cp.abs(rh)))
+    except Exception:
+        rh_max = float(np.nanmax(np.abs(_numpy_view(relative_humidity, dtype=np.float64))))
+    return rh * 100.0 if rh_max <= 1.0 + 1e-12 else rh
+
+
+def _is_gpu_array(value):
+    if _backend == Backend.METAL:
+        return "MetalArray" in globals() and isinstance(value, MetalArray)
+    return isinstance(value, cp.ndarray)
+
+
+def _numpy_view(value, dtype=None):
+    arr = strip_units(value)
+    if _is_gpu_array(arr):
+        arr = to_cpu(arr)
+    if dtype is None:
+        return np.asarray(arr)
+    return np.asarray(arr, dtype=dtype)
+
+
+def _array_ndim(value):
+    arr = strip_units(value)
+    ndim = getattr(arr, "ndim", None)
+    if ndim is not None:
+        return int(ndim)
+    return int(_numpy_view(arr).ndim)
+
+
+def _array_size(value):
+    arr = strip_units(value)
+    size = getattr(arr, "size", None)
+    if size is not None:
+        return int(size)
+    return int(_numpy_view(arr).size)
 
 
 def _scalar(arr):
@@ -1717,7 +1786,7 @@ def dewpoint_from_relative_humidity(temperature, relative_humidity):
     cupy.ndarray (Celsius)
     """
     t = _to_gpu(temperature)
-    rh = _to_gpu(relative_humidity)
+    rh = _rh_percent_value(relative_humidity)
     return _k_dewpoint_from_relative_humidity(t, rh)
 
 
@@ -1757,14 +1826,20 @@ def virtual_temperature(temperature, pressure_or_mixing_ratio, dewpoint=None,
     -------
     cupy.ndarray (Celsius)
     """
-    t = _to_gpu(temperature)
-    pmr = _to_gpu(pressure_or_mixing_ratio)
     if dewpoint is None:
         # MetPy path: T * (1 + w/eps) / (1 + w)
         eps = molecular_weight_ratio
+        if _has_metpy_inputs(temperature, pressure_or_mixing_ratio):
+            t_k = _to_gpu(_as_magnitude_in_units(temperature, "K"))
+            pmr = _to_gpu(_as_magnitude_in_units(pressure_or_mixing_ratio, "kg/kg"))
+            return t_k * (1.0 + pmr / eps) / (1.0 + pmr)
+        t = _to_gpu(temperature)
+        pmr = _to_gpu(pressure_or_mixing_ratio)
         t_k = t + 273.15
         tv_k = t_k * (1.0 + pmr / eps) / (1.0 + pmr)
         return tv_k - 273.15
+    t = _to_gpu(temperature)
+    pmr = _to_gpu(pressure_or_mixing_ratio)
     td = _to_gpu(dewpoint)
     return _k_virtual_temperature_from_dewpoint(pmr, t, td)
 
@@ -1840,6 +1915,8 @@ def density(pressure, temperature, mixing_ratio):
     -------
     cupy.ndarray (kg/m^3)
     """
+    if _has_metpy_inputs(pressure, temperature, mixing_ratio):
+        return _metpy_gpu_fallback("density", pressure, temperature, mixing_ratio)
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     w = _to_gpu(mixing_ratio) / 1000.0  # g/kg -> kg/kg (kernel expects kg/kg)
@@ -1890,6 +1967,8 @@ def dry_lapse(pressure, t_surface):
     -------
     cupy.ndarray (Celsius)
     """
+    if _has_metpy_inputs(pressure, t_surface):
+        return _metpy_gpu_fallback("dry_lapse", pressure, t_surface)
     p = _1d(pressure)
     t = _scalar(t_surface)
     p_ref = float(p[0])
@@ -1908,6 +1987,8 @@ def dry_static_energy(height, temperature):
     -------
     cupy.ndarray (J/kg)
     """
+    if _has_metpy_inputs(height, temperature):
+        return _metpy_gpu_fallback("dry_static_energy", height, temperature)
     h = _to_gpu(height)
     t = _to_gpu(temperature)
     return _k_dry_static_energy(h, t)
@@ -1941,6 +2022,11 @@ def moist_lapse(pressure, t_start, reference_pressure=None):
     -------
     cupy.ndarray (Celsius)
     """
+    if _has_metpy_inputs(pressure, t_start, reference_pressure):
+        kwargs = {}
+        if reference_pressure is not None:
+            kwargs["reference_pressure"] = reference_pressure
+        return _metpy_gpu_fallback("moist_lapse", pressure, t_start, **kwargs)
     p = _1d(pressure)
     t = _scalar(t_start)
     return _k_moist_lapse(p, t)
@@ -1959,6 +2045,8 @@ def moist_static_energy(height, temperature, specific_humidity):
     -------
     cupy.ndarray (J/kg)
     """
+    if _has_metpy_inputs(height, temperature, specific_humidity):
+        return _metpy_gpu_fallback("moist_static_energy", height, temperature, specific_humidity)
     h = _to_gpu(height)
     t = _to_gpu(temperature)
     q = _to_gpu(specific_humidity)
@@ -1978,6 +2066,8 @@ def parcel_profile(pressure, temperature, dewpoint):
     -------
     cupy.ndarray (Celsius)
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint):
+        return _metpy_gpu_fallback("parcel_profile", pressure, temperature, dewpoint)
     p = _1d(pressure)
     t = _scalar(temperature)
     td = _scalar(dewpoint)
@@ -2071,6 +2161,8 @@ def wet_bulb_potential_temperature(pressure, temperature, dewpoint):
     -------
     cupy.ndarray (K)
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint):
+        return _metpy_gpu_fallback("wet_bulb_potential_temperature", pressure, temperature, dewpoint)
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
     td = _to_gpu(dewpoint)
@@ -2107,6 +2199,9 @@ def vapor_pressure(pressure_or_dewpoint, mixing_ratio=None,
     -------
     cupy.ndarray (Pa)
     """
+    if _has_metpy_inputs(pressure_or_dewpoint, mixing_ratio):
+        if mixing_ratio is not None:
+            return _metpy_gpu_fallback("vapor_pressure", pressure_or_dewpoint, mixing_ratio)
     if mixing_ratio is not None:
         p = _to_gpu(_as_magnitude_in_units(pressure_or_dewpoint, "Pa"))
         w = _to_gpu(_as_magnitude_in_units(mixing_ratio, "kg/kg"))
@@ -2145,7 +2240,7 @@ def mixing_ratio_from_relative_humidity(pressure, temperature, relative_humidity
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    rh = _to_gpu(relative_humidity)
+    rh = _rh_percent_value(relative_humidity)
     return _k_mixing_ratio_from_relative_humidity(p, t, rh)
 
 
@@ -2179,7 +2274,16 @@ def relative_humidity_from_mixing_ratio(pressure, temperature, mixing_ratio_val)
     """
     p = _to_gpu(pressure)
     t = _to_gpu(temperature)
-    w = _to_gpu(mixing_ratio_val) / 1000.0  # g/kg -> kg/kg (kernel expects kg/kg)
+    if _has_metpy_inputs(mixing_ratio_val):
+        w = _to_gpu(_as_magnitude_in_units(mixing_ratio_val, "kg/kg"))
+    else:
+        w = _to_gpu(mixing_ratio_val)
+        try:
+            w_max = float(cp.nanmax(cp.abs(w)))
+        except Exception:
+            w_max = float(np.nanmax(np.abs(np.asarray(mixing_ratio_val, dtype=np.float64))))
+        if w_max > 0.2:
+            w = w / 1000.0
     return _k_relative_humidity_from_mixing_ratio(p, t, w) / 100.0  # percent -> fractional
 
 
@@ -2247,6 +2351,8 @@ def moist_air_gas_constant(mixing_ratio_kgkg):
     -------
     cupy.ndarray (J/(kg*K))
     """
+    if _has_metpy_inputs(mixing_ratio_kgkg):
+        return _metpy_gpu_fallback("moist_air_gas_constant", mixing_ratio_kgkg)
     w = _to_gpu(mixing_ratio_kgkg)
     return _k_moist_air_gas_constant(w)
 
@@ -2262,6 +2368,8 @@ def moist_air_specific_heat_pressure(mixing_ratio_kgkg):
     -------
     cupy.ndarray (J/(kg*K))
     """
+    if _has_metpy_inputs(mixing_ratio_kgkg):
+        return _metpy_gpu_fallback("moist_air_specific_heat_pressure", mixing_ratio_kgkg)
     w = _to_gpu(mixing_ratio_kgkg)
     return _k_moist_air_specific_heat_pressure(w)
 
@@ -2277,6 +2385,8 @@ def moist_air_poisson_exponent(mixing_ratio_kgkg):
     -------
     cupy.ndarray (dimensionless)
     """
+    if _has_metpy_inputs(mixing_ratio_kgkg):
+        return _metpy_gpu_fallback("moist_air_poisson_exponent", mixing_ratio_kgkg)
     w = _to_gpu(mixing_ratio_kgkg)
     return _k_moist_air_poisson_exponent(w)
 
@@ -2292,6 +2402,8 @@ def water_latent_heat_vaporization(temperature):
     -------
     cupy.ndarray (J/kg)
     """
+    if _has_metpy_inputs(temperature):
+        return _metpy_gpu_fallback("water_latent_heat_vaporization", temperature)
     t = _to_gpu(temperature)
     return _k_water_latent_heat_vaporization(t)
 
@@ -2307,6 +2419,8 @@ def water_latent_heat_melting(temperature):
     -------
     cupy.ndarray (J/kg)
     """
+    if _has_metpy_inputs(temperature):
+        return _metpy_gpu_fallback("water_latent_heat_melting", temperature)
     t = _to_gpu(temperature)
     return _k_water_latent_heat_melting(t)
 
@@ -2322,6 +2436,8 @@ def water_latent_heat_sublimation(temperature):
     -------
     cupy.ndarray (J/kg)
     """
+    if _has_metpy_inputs(temperature):
+        return _metpy_gpu_fallback("water_latent_heat_sublimation", temperature)
     t = _to_gpu(temperature)
     return _k_water_latent_heat_sublimation(t)
 
@@ -2339,6 +2455,13 @@ def relative_humidity_wet_psychrometric(temperature, wet_bulb, pressure):
     -------
     cupy.ndarray (percent)
     """
+    if _has_metpy_inputs(temperature, wet_bulb, pressure):
+        return _metpy_gpu_fallback(
+            "relative_humidity_wet_psychrometric",
+            temperature,
+            wet_bulb,
+            pressure,
+        )
     t = _to_gpu(temperature)
     tw = _to_gpu(wet_bulb)
     p = _to_gpu(pressure)
@@ -2368,8 +2491,23 @@ def psychrometric_vapor_pressure(temperature, wet_bulb, pressure):
     return _k_psychrometric_vapor_pressure(t, tw, p)
 
 
-def psychrometric_vapor_pressure_wet(temperature, wet_bulb, pressure):
+def psychrometric_vapor_pressure_wet(temperature, wet_bulb, pressure,
+                                     psychrometer_coefficient=None):
     """Alias for psychrometric_vapor_pressure."""
+    if (
+        _has_metpy_inputs(temperature, wet_bulb, pressure, psychrometer_coefficient)
+        or psychrometer_coefficient is not None
+    ):
+        kwargs = {}
+        if psychrometer_coefficient is not None:
+            kwargs["psychrometer_coefficient"] = psychrometer_coefficient
+        return _metpy_gpu_fallback(
+            "psychrometric_vapor_pressure_wet",
+            temperature,
+            wet_bulb,
+            pressure,
+            **kwargs,
+        )
     return psychrometric_vapor_pressure(temperature, wet_bulb, pressure)
 
 
@@ -2402,6 +2540,12 @@ def add_pressure_to_height(height, delta_pressure):
     -------
     cupy.ndarray (m)
     """
+    if _has_metpy_inputs(height, delta_pressure):
+        return _metpy_gpu_fallback("add_pressure_to_height", height, delta_pressure)
+    if _has_metpy_inputs(height, temperature):
+        return _metpy_gpu_fallback("dry_static_energy", height, temperature)
+    if _has_metpy_inputs(height, temperature, specific_humidity):
+        return _metpy_gpu_fallback("moist_static_energy", height, temperature, specific_humidity)
     h = _to_gpu(height)
     dp = _to_gpu(delta_pressure)
     return _k_add_pressure_to_height(h, dp)
@@ -2420,6 +2564,28 @@ def thickness_hydrostatic(pressure_or_bottom, temperature_or_top, t_mean=None,
     -------
     cupy.ndarray or float (m)
     """
+    if _has_metpy_inputs(
+        pressure_or_bottom,
+        temperature_or_top,
+        t_mean,
+        mixing_ratio,
+        bottom,
+        depth,
+    ):
+        kwargs = {
+            "mixing_ratio": mixing_ratio,
+            "molecular_weight_ratio": molecular_weight_ratio,
+            "bottom": bottom,
+            "depth": depth,
+        }
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback(
+            "thickness_hydrostatic",
+            pressure_or_bottom,
+            temperature_or_top,
+            t_mean,
+            **kwargs,
+        )
     if t_mean is not None:
         p_bot = _to_gpu(pressure_or_bottom)
         p_top_val = _to_gpu(temperature_or_top)
@@ -2458,7 +2624,7 @@ def thickness_hydrostatic_from_relative_humidity(pressure, temperature,
     return _STUB_thickness_from_rh(p, t, rh)
 
 
-def scale_height(temperature):
+def scale_height(temperature, temperature_top=None):
     """Atmospheric scale height.
 
     Parameters
@@ -2469,6 +2635,10 @@ def scale_height(temperature):
     -------
     cupy.ndarray (m)
     """
+    if temperature_top is not None or _has_metpy_inputs(temperature, temperature_top):
+        if temperature_top is None:
+            raise TypeError("scale_height requires both bottom and top temperatures")
+        return _metpy_gpu_fallback("scale_height", temperature, temperature_top)
     t = _to_gpu(temperature)
     return _k_scale_height(t)
 
@@ -2484,6 +2654,8 @@ def geopotential_to_height(geopotential):
     -------
     cupy.ndarray (m)
     """
+    if _has_metpy_inputs(geopotential):
+        return _metpy_gpu_fallback("geopotential_to_height", geopotential)
     gp = _to_gpu(geopotential)
     return _k_geopotential_to_height(gp)
 
@@ -2499,11 +2671,13 @@ def height_to_geopotential(height):
     -------
     cupy.ndarray (m^2/s^2)
     """
+    if _has_metpy_inputs(height):
+        return _metpy_gpu_fallback("height_to_geopotential", height)
     h = _to_gpu(height)
     return _k_height_to_geopotential(h)
 
 
-def weighted_continuous_average(values, weights):
+def weighted_continuous_average(values, weights, *, bottom=None, depth=None):
     """Trapezoidal weighted average over a coordinate.
 
     Parameters
@@ -2515,6 +2689,17 @@ def weighted_continuous_average(values, weights):
     -------
     float
     """
+    if (
+        _has_metpy_inputs(values, weights, bottom, depth)
+        or bottom is not None
+        or depth is not None
+    ):
+        kwargs = {}
+        if bottom is not None:
+            kwargs["bottom"] = bottom
+        if depth is not None:
+            kwargs["depth"] = depth
+        return _metpy_gpu_fallback("weighted_continuous_average", values, weights, **kwargs)
     v = _1d(values)
     w = _1d(weights)
     # Trapezoidal rule: sum((v[i]+v[i+1])/2 * (w[i+1]-w[i])) / (w[-1]-w[0])
@@ -2553,6 +2738,8 @@ def pressure_to_height_std(pressure):
     -------
     cupy.ndarray (m)
     """
+    if _has_metpy_inputs(pressure):
+        return _metpy_gpu_fallback("pressure_to_height_std", pressure)
     p = _to_gpu(pressure)
     baro_exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065)
     return (288.0 / 0.0065) * (1.0 - (p / 1013.25) ** (1.0 / baro_exp))
@@ -2569,6 +2756,8 @@ def height_to_pressure_std(height):
     -------
     cupy.ndarray (hPa)
     """
+    if _has_metpy_inputs(height):
+        return _metpy_gpu_fallback("height_to_pressure_std", height)
     h = _to_gpu(height)
     baro_exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065)
     return 1013.25 * (1.0 - 0.0065 * h / 288.0) ** baro_exp
@@ -2586,6 +2775,8 @@ def altimeter_to_station_pressure(altimeter, elevation):
     -------
     cupy.ndarray (hPa)
     """
+    if _has_metpy_inputs(altimeter, elevation):
+        return _metpy_gpu_fallback("altimeter_to_station_pressure", altimeter, elevation)
     a = _to_gpu(altimeter)
     e = _to_gpu(elevation)
     baro_exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065)
@@ -2625,6 +2816,8 @@ def altimeter_to_sea_level_pressure(altimeter, elevation, temperature):
     -------
     cupy.ndarray (hPa)
     """
+    if _has_metpy_inputs(altimeter, elevation, temperature):
+        return _metpy_gpu_fallback("altimeter_to_sea_level_pressure", altimeter, elevation, temperature)
     a = _to_gpu(altimeter)
     e = _to_gpu(elevation)
     t = _to_gpu(temperature)
@@ -2646,6 +2839,8 @@ def sigma_to_pressure(sigma, psfc, ptop):
     -------
     cupy.ndarray (hPa)
     """
+    if _has_metpy_inputs(sigma, psfc, ptop):
+        return _metpy_gpu_fallback("sigma_to_pressure", sigma, psfc, ptop)
     s = _to_gpu(sigma)
     ps = _to_gpu(psfc)
     pt = _to_gpu(ptop)
@@ -2664,8 +2859,10 @@ def heat_index(temperature, relative_humidity):
     -------
     cupy.ndarray (Celsius)
     """
+    if _has_metpy_inputs(temperature, relative_humidity):
+        return _metpy_gpu_fallback("heat_index", temperature, relative_humidity)
     t = _to_gpu(temperature)
-    rh = _to_gpu(relative_humidity)
+    rh = _rh_percent_value(relative_humidity)
     return _k_heat_index(t, rh)
 
 
@@ -2681,6 +2878,8 @@ def windchill(temperature, wind_speed_val):
     -------
     cupy.ndarray (Celsius)
     """
+    if _has_metpy_inputs(temperature, wind_speed_val):
+        return _metpy_gpu_fallback("windchill", temperature, wind_speed_val)
     t = _to_gpu(temperature)
     ws = _to_gpu(wind_speed_val)
     return _k_windchill(t, ws)
@@ -2699,8 +2898,15 @@ def apparent_temperature(temperature, relative_humidity, wind_speed_val):
     -------
     cupy.ndarray (Celsius)
     """
+    if _has_metpy_inputs(temperature, relative_humidity, wind_speed_val):
+        return _metpy_gpu_fallback(
+            "apparent_temperature",
+            temperature,
+            relative_humidity,
+            wind_speed_val,
+        )
     t = _to_gpu(temperature)
-    rh = _to_gpu(relative_humidity)
+    rh = _rh_percent_value(relative_humidity)
     ws = _to_gpu(wind_speed_val)
     return _k_apparent_temperature(t, rh, ws)
 
@@ -2724,6 +2930,15 @@ def lfc(pressure, temperature, dewpoint, parcel_temperature_profile=None,
     tuple of (cupy.ndarray, cupy.ndarray)
         LFC pressure (hPa) and parcel temperature at the LFC (Celsius).
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint, parcel_temperature_profile, dewpoint_start):
+        kwargs = {}
+        if parcel_temperature_profile is not None:
+            kwargs["parcel_temperature_profile"] = parcel_temperature_profile
+        if dewpoint_start is not None:
+            kwargs["dewpoint_start"] = dewpoint_start
+        if which != "top":
+            kwargs["which"] = which
+        return _metpy_gpu_fallback("lfc", pressure, temperature, dewpoint, **kwargs)
     p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
     t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
     td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
@@ -2767,6 +2982,13 @@ def el(pressure, temperature, dewpoint, parcel_temperature_profile=None,
     tuple of (cupy.ndarray, cupy.ndarray)
         EL pressure (hPa) and parcel temperature at the EL (Celsius).
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint, parcel_temperature_profile):
+        kwargs = {}
+        if parcel_temperature_profile is not None:
+            kwargs["parcel_temperature_profile"] = parcel_temperature_profile
+        if which != "top":
+            kwargs["which"] = which
+        return _metpy_gpu_fallback("el", pressure, temperature, dewpoint, **kwargs)
     p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
     t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
     td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
@@ -2852,6 +3074,23 @@ def cape_cin(pressure, temperature, dewpoint, parcel_profile_or_height=None,
     if kwargs:
         raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs)}")
 
+    if _has_metpy_inputs(
+        pressure,
+        temperature,
+        dewpoint,
+        parcel_profile_or_height,
+        parcel_profile,
+        psfc,
+        t2m,
+        td2m,
+    ):
+        mp_kwargs = {}
+        if parcel_profile is not None:
+            mp_kwargs["parcel_profile"] = parcel_profile
+        elif parcel_profile_or_height is not None:
+            mp_kwargs["parcel_profile"] = parcel_profile_or_height
+        return _metpy_gpu_fallback("cape_cin", pressure, temperature, dewpoint, **mp_kwargs)
+
     if parcel_profile is not None:
         parcel_profile_or_height = parcel_profile
     if len(args) >= 3:
@@ -2864,17 +3103,17 @@ def cape_cin(pressure, temperature, dewpoint, parcel_profile_or_height=None,
     fourth = parcel_profile_or_height
     metpy_profile_form = False
     if fourth is not None:
-        fourth_arr = np.asarray(strip_units(fourth), dtype=np.float64)
+        fourth_arr = _numpy_view(fourth, dtype=np.float64)
         if parcel_profile is not None or (fourth_arr.size == p.size and np.nanmax(np.abs(fourth_arr)) < 150.0):
             metpy_profile_form = True
 
     if metpy_profile_form:
-        t_parcel = np.asarray(strip_units(fourth), dtype=np.float64).ravel()
+        t_parcel = _numpy_view(fourth, dtype=np.float64).ravel()
         cape_val, cin_val = _parcel_profile_cape_cin_numpy(p, t, td, t_parcel)
         return cp.asarray([cape_val], dtype=cp.float64), cp.asarray([cin_val], dtype=cp.float64)
 
     if fourth is not None:
-        h = np.asarray(strip_units(fourth), dtype=np.float64).ravel()
+        h = _numpy_view(fourth, dtype=np.float64).ravel()
     else:
         h = _standard_agl_heights_from_pressure(p)
         if psfc is None:
@@ -2916,6 +3155,8 @@ def surface_based_cape_cin(pressure, temperature, dewpoint):
     tuple of (cupy.ndarray, cupy.ndarray)
         CAPE (J/kg) and CIN (J/kg).
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint):
+        return _metpy_gpu_fallback("surface_based_cape_cin", pressure, temperature, dewpoint)
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint)
@@ -2948,6 +3189,14 @@ def mixed_layer_cape_cin(pressure, temperature, dewpoint, depth=100.0):
     tuple of (cupy.ndarray, cupy.ndarray)
         CAPE (J/kg) and CIN (J/kg).
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint, depth):
+        return _metpy_gpu_fallback(
+            "mixed_layer_cape_cin",
+            pressure,
+            temperature,
+            dewpoint,
+            depth=depth,
+        )
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint)
@@ -2982,6 +3231,16 @@ def most_unstable_cape_cin(pressure, temperature, dewpoint, depth=300, **kwargs)
     tuple of (cupy.ndarray, cupy.ndarray)
         CAPE (J/kg) and CIN (J/kg).
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint, depth) or kwargs:
+        merged = dict(kwargs)
+        merged["depth"] = depth if hasattr(depth, "magnitude") or units is None else depth * units.hPa
+        return _metpy_gpu_fallback(
+            "most_unstable_cape_cin",
+            pressure,
+            temperature,
+            dewpoint,
+            **merged,
+        )
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint)
@@ -3014,6 +3273,8 @@ def downdraft_cape(pressure, temperature, dewpoint):
     -------
     cupy.ndarray (J/kg)
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint):
+        return _metpy_gpu_fallback("downdraft_cape", pressure, temperature, dewpoint)
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint)
@@ -3033,6 +3294,8 @@ def showalter_index(pressure, temperature, dewpoint):
     -------
     cupy.ndarray (delta_degC)
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint):
+        return _metpy_gpu_fallback("showalter_index", pressure, temperature, dewpoint)
     p = cp.asnumpy(_1d(pressure)).astype(np.float64, copy=False)
     t = cp.asnumpy(_1d(temperature)).astype(np.float64, copy=False)
     td = cp.asnumpy(_1d(dewpoint)).astype(np.float64, copy=False)
@@ -3058,8 +3321,7 @@ def k_index(*args, vertical_dim=0):
         t850, td850, t700, td700, t500 = [_to_gpu(a) for a in args]
         return _k_k_index(t850, t700, t500, td850, td700)
     elif len(args) == 3:
-        p, t, td = [_1d(a) for a in args]
-        return _k_k_index(p, t, td)
+        return _metrust_gpu_fallback("k_index", *args)
     raise TypeError("k_index expects (t850, td850, t700, td700, t500) or (pressure, temperature, dewpoint)")
 
 
@@ -3072,6 +3334,8 @@ def total_totals(*args, vertical_dim=0):
     -------
     cupy.ndarray (delta_degC)
     """
+    if len(args) == 3 and _array_ndim(args[0]) > 0:
+        return _metrust_gpu_fallback("total_totals", *args)
     if len(args) == 3:
         t850, td850, t500 = [_to_gpu(a) for a in args]
         return _k_total_totals(t850, t500, td850)
@@ -3088,7 +3352,9 @@ def cross_totals(*args, vertical_dim=0):
     -------
     cupy.ndarray (delta_degC)
     """
-    if len(args) in (2, 3):
+    if len(args) == 3:
+        return _metrust_gpu_fallback("cross_totals", *args)
+    if len(args) == 2:
         return _k_cross_totals(*[_to_gpu(a) for a in args])
     raise TypeError("cross_totals expects (pressure, temperature, dewpoint) or (td850, t500)")
 
@@ -3100,6 +3366,8 @@ def vertical_totals(*args, vertical_dim=0):
     -------
     cupy.ndarray (delta_degC)
     """
+    if len(args) == 2 and _array_ndim(args[0]) > 0:
+        return _metrust_gpu_fallback("vertical_totals", *args)
     if len(args) == 2:
         return _k_vertical_totals(*[_to_gpu(a) for a in args])
     raise TypeError("vertical_totals expects (pressure, temperature) or (t850, t500)")
@@ -3138,6 +3406,8 @@ def lifted_index(pressure, temperature, dewpoint):
     -------
     cupy.ndarray (delta_degC)
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint):
+        return _metpy_gpu_fallback("lifted_index", pressure, temperature, dewpoint)
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint)
@@ -3157,13 +3427,15 @@ def ccl(pressure, temperature, dewpoint):
     -------
     tuple of (cupy.ndarray, cupy.ndarray) or None
     """
+    if _has_metpy_inputs(pressure, temperature, dewpoint):
+        return _metpy_gpu_fallback("ccl", pressure, temperature, dewpoint)
     p = _1d(pressure)
     t = _1d(temperature)
     td = _1d(dewpoint)
     return _k_ccl(p, t, td)
 
 
-def precipitable_water(pressure, dewpoint):
+def precipitable_water(pressure, dewpoint, *, bottom=None, top=None):
     """Precipitable water.
 
     Parameters
@@ -3175,9 +3447,24 @@ def precipitable_water(pressure, dewpoint):
     -------
     cupy.ndarray (mm)
     """
+    if _has_metpy_inputs(pressure, dewpoint, bottom, top) or bottom is not None or top is not None:
+        kwargs = {}
+        if bottom is not None:
+            kwargs["bottom"] = bottom
+        if top is not None:
+            kwargs["top"] = top
+        return _metpy_gpu_fallback("precipitable_water", pressure, dewpoint, **kwargs)
     p = _1d(pressure)
     td = _1d(dewpoint)
     return _k_precipitable_water(p, td)
+
+
+precipitable_water.__signature__ = inspect.Signature(
+    parameters=[
+        inspect.Parameter("pressure", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("dewpoint", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+    ]
+)
 
 
 def brunt_vaisala_frequency(height, potential_temp):
@@ -3244,6 +3531,8 @@ def static_stability(pressure, temperature):
     -------
     cupy.ndarray (K/Pa)
     """
+    if _has_metpy_inputs(pressure, temperature):
+        return _metpy_gpu_fallback("static_stability", pressure, temperature)
     p = _1d(pressure)
     t = _1d(temperature)
     return _k_static_stability(p, t)
@@ -3263,6 +3552,12 @@ def parcel_profile_with_lcl(pressure, t_surface, td_surface):
     tuple of (cupy.ndarray, cupy.ndarray)
         Pressure levels (with LCL) and parcel temperatures.
     """
+    if (
+        _has_metpy_inputs(pressure, t_surface, td_surface)
+        or _array_ndim(t_surface) > 0
+        or _array_ndim(td_surface) > 0
+    ):
+        return _metpy_gpu_fallback("parcel_profile_with_lcl", pressure, t_surface, td_surface)
     p = _1d(pressure)
     t = _scalar(t_surface)
     td = _scalar(td_surface)
@@ -3311,7 +3606,8 @@ def get_layer(pressure, *args, p_bottom=None, p_top=None,
     return (p_layer,) + tuple(results)
 
 
-def get_layer_heights(pressure, heights, p_bottom, p_top):
+def get_layer_heights(pressure, heights, p_bottom=None, p_top=None, *, bottom=None,
+                      interpolate=True, with_agl=False):
     """Extract layer heights between two pressures.
 
     Parameters
@@ -3325,7 +3621,16 @@ def get_layer_heights(pressure, heights, p_bottom, p_top):
     -------
     tuple of (float, float, float) -- (p_layer, h_bottom, h_top)
     """
-    return get_layer(pressure, heights, p_bottom=p_bottom, p_top=p_top, interpolate=True)
+    if (
+        bottom is not None
+        or _has_metpy_inputs(pressure, heights, p_bottom, p_top, bottom)
+        or p_top is None
+    ):
+        kwargs = {"interpolate": interpolate, "with_agl": with_agl}
+        if bottom is not None:
+            kwargs["bottom"] = bottom
+        return _metpy_gpu_fallback("get_layer_heights", pressure, heights, p_bottom, **kwargs)
+    return get_layer(pressure, heights, p_bottom=p_bottom, p_top=p_top, interpolate=interpolate)
 
 
 def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
@@ -3342,6 +3647,12 @@ def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
     -------
     float or tuple of floats
     """
+    if _has_metpy_inputs(pressure, args, height, bottom, depth):
+        kwargs = {"height": height, "bottom": bottom, "depth": depth}
+        if not interpolate:
+            kwargs["interpolate"] = interpolate
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback("mixed_layer", pressure, *args, **kwargs)
     p = _1d(pressure)
     d = _scalar(depth)
     if len(args) == 1:
@@ -3356,7 +3667,7 @@ def mixed_layer(pressure, *args, height=None, bottom=None, depth=100.0,
     raise TypeError("mixed_layer requires at least one profile argument")
 
 
-def mean_pressure_weighted(pressure, values):
+def mean_pressure_weighted(pressure, values, *, bottom=None, depth=None):
     """Pressure-weighted mean of a quantity.
 
     Parameters
@@ -3367,13 +3678,20 @@ def mean_pressure_weighted(pressure, values):
     -------
     float
     """
+    if _has_metpy_inputs(pressure, values, bottom, depth) or bottom is not None or depth is not None:
+        kwargs = {}
+        if bottom is not None:
+            kwargs["bottom"] = bottom
+        if depth is not None:
+            kwargs["depth"] = depth
+        return _metpy_gpu_fallback("mean_pressure_weighted", pressure, values, **kwargs)
     p = _1d(pressure)
     v = _1d(values)
-    pb = float(cp.asnumpy(p[0]))
-    pt = float(cp.asnumpy(p[-1]))
-    # 1D case: pressure-weighted average using trapezoidal rule
     p_np = cp.asnumpy(p)
     v_np = cp.asnumpy(v)
+    pb = float(strip_units(bottom)) if bottom is not None else float(p_np[0])
+    pt = pb - float(strip_units(depth)) if depth is not None else float(p_np[-1])
+    # 1D case: pressure-weighted average using trapezoidal rule
     mask = (p_np <= pb) & (p_np >= pt)
     if mask.sum() < 2:
         return float(v_np[mask].mean()) if mask.sum() > 0 else 0.0
@@ -3382,6 +3700,14 @@ def mean_pressure_weighted(pressure, values):
     dp = np.abs(np.diff(p_sub))
     avg_v = (v_sub[:-1] + v_sub[1:]) / 2.0
     return float(np.sum(avg_v * dp) / np.sum(dp))
+
+
+mean_pressure_weighted.__signature__ = inspect.Signature(
+    parameters=[
+        inspect.Parameter("pressure", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("values", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+    ]
+)
 
 
 def get_mixed_layer_parcel(pressure, temperature, dewpoint, depth=100.0):
@@ -3437,6 +3763,24 @@ def mixed_parcel(pressure, temperature, dewpoint, parcel_start_pressure=None,
     -------
     tuple of (cupy.ndarray, cupy.ndarray, cupy.ndarray)
     """
+    if _has_metpy_inputs(
+        pressure,
+        temperature,
+        dewpoint,
+        parcel_start_pressure,
+        height,
+        bottom,
+        depth,
+    ):
+        kwargs = {
+            "parcel_start_pressure": parcel_start_pressure,
+            "height": height,
+            "bottom": bottom,
+            "depth": depth,
+            "interpolate": interpolate,
+        }
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback("mixed_parcel", pressure, temperature, dewpoint, **kwargs)
     d = _scalar(depth)
     return get_mixed_layer_parcel(pressure, temperature, dewpoint, d)
 
@@ -3519,24 +3863,7 @@ def find_intersections(x, y1, y2):
     -------
     list of (x, y) tuples
     """
-    # CPU-only utility: transfer to CPU and compute
-    x_arr = cp.asnumpy(_1d(x))
-    y1_arr = cp.asnumpy(_1d(y1))
-    y2_arr = cp.asnumpy(_1d(y2))
-    try:
-        from metrust.calc import find_intersections as _find
-        return _find(x_arr, y1_arr, y2_arr)
-    except ImportError:
-        # Simple fallback: find sign changes in y1-y2
-        diff = y1_arr - y2_arr
-        result = []
-        for i in range(len(diff) - 1):
-            if diff[i] * diff[i + 1] < 0:
-                frac = diff[i] / (diff[i] - diff[i + 1])
-                xi = x_arr[i] + frac * (x_arr[i + 1] - x_arr[i])
-                yi = y1_arr[i] + frac * (y1_arr[i + 1] - y1_arr[i])
-                result.append((xi, yi))
-        return result
+    return _metpy_gpu_fallback("find_intersections", x, y1, y2)
 
 
 def convective_inhibition_depth(pressure, temperature, dewpoint):
@@ -3705,6 +4032,10 @@ def storm_relative_helicity(*args, bottom=None, depth=None,
     tuple of (cupy.ndarray, cupy.ndarray, cupy.ndarray)
         Positive, negative, and total SRH (m^2/s^2).
     """
+    if _has_metpy_inputs(args, bottom, depth, storm_u, storm_v):
+        kwargs = {"bottom": bottom, "depth": depth, "storm_u": storm_u, "storm_v": storm_v}
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback("storm_relative_helicity", *args, **kwargs)
     if len(args) == 6:
         u, v, height_a, depth_a, storm_u, storm_v = args
     elif len(args) == 4:
@@ -3758,6 +4089,21 @@ def bunkers_storm_motion(pressure_or_u, u_or_v, v_or_height, height=None):
     -------
     tuple of 3 tuples, each (cupy.ndarray, cupy.ndarray)
     """
+    if _has_metpy_inputs(pressure_or_u, u_or_v, v_or_height, height):
+        if height is not None:
+            return _metpy_gpu_fallback(
+                "bunkers_storm_motion",
+                pressure_or_u,
+                u_or_v,
+                v_or_height,
+                height=height,
+            )
+        return _metpy_gpu_fallback(
+            "bunkers_storm_motion",
+            pressure_or_u,
+            u_or_v,
+            v_or_height,
+        )
     if height is not None:
         p = _1d(pressure_or_u)
         u = _1d(u_or_v)
@@ -3804,6 +4150,20 @@ def corfidi_storm_motion(pressure_or_u, u_or_v, v_or_height, *args,
     -------
     tuple of 2 tuples, each (cupy.ndarray, cupy.ndarray)
     """
+    if _has_metpy_inputs(pressure_or_u, u_or_v, v_or_height, args, u_llj, v_llj):
+        kwargs = {}
+        if u_llj is not None:
+            kwargs["u_llj"] = u_llj
+        if v_llj is not None:
+            kwargs["v_llj"] = v_llj
+        return _metpy_gpu_fallback(
+            "corfidi_storm_motion",
+            pressure_or_u,
+            u_or_v,
+            v_or_height,
+            *args,
+            **kwargs,
+        )
     if len(args) != 2:
         raise TypeError("corfidi_storm_motion expects 5 positional args")
     u_850, v_850 = args
@@ -3818,7 +4178,7 @@ def corfidi_storm_motion(pressure_or_u, u_or_v, v_or_height, *args,
     return (prop_u, prop_v), (mw_u + prop_u, mw_v + prop_v)
 
 
-def friction_velocity(u, w):
+def friction_velocity(u, w, v=None, axis=-1):
     """Friction velocity from time series of u and w components.
 
     Parameters
@@ -3829,12 +4189,17 @@ def friction_velocity(u, w):
     -------
     cupy.ndarray (m/s)
     """
+    if _has_metpy_inputs(u, w, v) or v is not None or axis != -1:
+        kwargs = {"axis": axis}
+        if v is not None:
+            kwargs["v"] = v
+        return _metpy_gpu_fallback("friction_velocity", u, w, **kwargs)
     u_arr = _1d(u)
     w_arr = _1d(w)
     return _k_friction_velocity(u_arr, w_arr)
 
 
-def tke(u, v, w):
+def tke(u, v, w, perturbation=False, axis=-1):
     """Turbulent kinetic energy from wind component time series.
 
     Parameters
@@ -3845,13 +4210,15 @@ def tke(u, v, w):
     -------
     cupy.ndarray (m^2/s^2)
     """
+    if _has_metpy_inputs(u, v, w) or perturbation or axis != -1:
+        return _metpy_gpu_fallback("tke", u, v, w, perturbation=perturbation, axis=axis)
     u_arr = _1d(u)
     v_arr = _1d(v)
     w_arr = _1d(w)
     return _k_tke(u_arr, v_arr, w_arr)
 
 
-def gradient_richardson_number(height, potential_temperature, u, v):
+def gradient_richardson_number(height, potential_temperature, u, v, vertical_dim=0):
     """Gradient Richardson number at each level.
 
     Parameters
@@ -3864,6 +4231,15 @@ def gradient_richardson_number(height, potential_temperature, u, v):
     -------
     cupy.ndarray (dimensionless)
     """
+    if _has_metpy_inputs(height, potential_temperature, u, v) or vertical_dim != 0:
+        return _metpy_gpu_fallback(
+            "gradient_richardson_number",
+            height,
+            potential_temperature,
+            u,
+            v,
+            vertical_dim=vertical_dim,
+        )
     z = _1d(height)
     theta = _1d(potential_temperature)
     u_arr = _1d(u)
@@ -3882,6 +4258,8 @@ def coriolis_parameter(latitude):
     -------
     cupy.ndarray (1/s)
     """
+    if _has_metpy_inputs(latitude):
+        return _metpy_gpu_fallback("coriolis_parameter", latitude)
     lat = _to_gpu(latitude)
     return _k_coriolis_parameter(lat)
 
@@ -4057,7 +4435,7 @@ def geostrophic_wind(heights, dx=None, dy=None, latitude=None, x_dim=-1,
     return ug, vg
 
 
-def ageostrophic_wind(u, v, heights, lats, dx, dy):
+def ageostrophic_wind(u, v, heights, lats=None, dx=None, dy=None, latitude=None):
     """Ageostrophic wind: total wind minus geostrophic wind.
 
     Parameters
@@ -4071,6 +4449,14 @@ def ageostrophic_wind(u, v, heights, lats, dx, dy):
     -------
     tuple of (cupy.ndarray, cupy.ndarray) (m/s)
     """
+    if _has_metpy_inputs(u, v, heights, lats, dx, dy, latitude) or latitude is not None:
+        kwargs = {"dx": dx, "dy": dy}
+        if latitude is not None:
+            kwargs["latitude"] = latitude
+        elif lats is not None:
+            kwargs["latitude"] = lats
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback("ageostrophic_wind", u, v, heights, **kwargs)
     u_arr = _2d(u)
     v_arr = _2d(v)
     h_arr = _2d(heights)
@@ -4090,6 +4476,27 @@ def potential_vorticity_baroclinic(potential_temp, pressure, *args, dx=None,
     -------
     cupy.ndarray (K*m^2/(kg*s))
     """
+    if (
+        _has_metpy_inputs(potential_temp, pressure, args, dx, dy, latitude, longitude, crs)
+        or latitude is not None
+        or longitude is not None
+        or crs is not None
+        or vertical_dim != -3
+        or x_dim != -1
+        or y_dim != -2
+    ):
+        kwargs = {
+            "dx": dx,
+            "dy": dy,
+            "latitude": latitude,
+            "x_dim": x_dim,
+            "y_dim": y_dim,
+            "vertical_dim": vertical_dim,
+            "longitude": longitude,
+            "crs": crs,
+        }
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback("potential_vorticity_baroclinic", potential_temp, pressure, *args, **kwargs)
     gpu_args = [_2d(a) for a in args]
     pt = _2d(potential_temp)
     p = _to_gpu(pressure)
@@ -4098,7 +4505,7 @@ def potential_vorticity_baroclinic(potential_temp, pressure, *args, dx=None,
     return _k_potential_vorticity_baroclinic(pt, p, gpu_args, dx_val, dy_val, latitude)
 
 
-def potential_vorticity_barotropic(heights, u, v, lats, dx, dy):
+def potential_vorticity_barotropic(heights, u, v, lats=None, dx=None, dy=None, latitude=None):
     """Barotropic potential vorticity.
 
     Parameters
@@ -4112,6 +4519,14 @@ def potential_vorticity_barotropic(heights, u, v, lats, dx, dy):
     -------
     cupy.ndarray (1/(m*s))
     """
+    if _has_metpy_inputs(heights, u, v, lats, dx, dy, latitude) or latitude is not None:
+        kwargs = {"dx": dx, "dy": dy}
+        if latitude is not None:
+            kwargs["latitude"] = latitude
+        elif lats is not None:
+            kwargs["latitude"] = lats
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback("potential_vorticity_barotropic", heights, u, v, **kwargs)
     h_arr = _2d(heights)
     u_arr = _2d(u)
     v_arr = _2d(v)
@@ -4125,7 +4540,7 @@ def potential_vorticity_barotropic(heights, u, v, lats, dx, dy):
     return cp.nan_to_num(out)
 
 
-def normal_component(u, v, start, end):
+def normal_component(u, v, start=None, end=None):
     """Normal (perpendicular) component of wind relative to a cross-section.
 
     Parameters
@@ -4137,12 +4552,16 @@ def normal_component(u, v, start, end):
     -------
     cupy.ndarray (m/s)
     """
+    if start is None or end is None or _has_metpy_inputs(u, v, start, end):
+        if start is None and end is None:
+            return _metpy_gpu_fallback("normal_component", u, v)
+        return _metpy_gpu_fallback("normal_component", u, v, start, end)
     u_arr = _1d(u)
     v_arr = _1d(v)
     return _k_normal_component(u_arr, v_arr, start, end)
 
 
-def tangential_component(u, v, start, end):
+def tangential_component(u, v, start=None, end=None):
     """Tangential (parallel) component of wind relative to a cross-section.
 
     Parameters
@@ -4154,12 +4573,16 @@ def tangential_component(u, v, start, end):
     -------
     cupy.ndarray (m/s)
     """
+    if start is None or end is None or _has_metpy_inputs(u, v, start, end):
+        if start is None and end is None:
+            return _metpy_gpu_fallback("tangential_component", u, v)
+        return _metpy_gpu_fallback("tangential_component", u, v, start, end)
     u_arr = _1d(u)
     v_arr = _1d(v)
     return _k_tangential_component(u_arr, v_arr, start, end)
 
 
-def unit_vectors_from_cross_section(start, end):
+def unit_vectors_from_cross_section(start, end=None):
     """Tangent and normal unit vectors for a cross-section line.
 
     Parameters
@@ -4170,6 +4593,10 @@ def unit_vectors_from_cross_section(start, end):
     -------
     tuple of ((east, north), (east, north))
     """
+    if end is None or _has_metpy_inputs(start, end):
+        if end is None:
+            return _metpy_gpu_fallback("unit_vectors_from_cross_section", start)
+        return _metpy_gpu_fallback("unit_vectors_from_cross_section", start, end)
     dlat = end[0] - start[0]
     dlon = end[1] - start[1]
     mag = np.sqrt(dlat**2 + dlon**2)
@@ -4199,7 +4626,7 @@ def vector_derivative(u, v, dx, dy):
     return _STUB_vector_derivative(u_arr, v_arr, dx_val, dy_val)
 
 
-def absolute_momentum(u, lats, y_distances):
+def absolute_momentum(u, lats, y_distances=None):
     """Absolute momentum.
 
     Parameters
@@ -4212,13 +4639,17 @@ def absolute_momentum(u, lats, y_distances):
     -------
     cupy.ndarray (m/s)
     """
+    if y_distances is None or _has_metpy_inputs(u, lats, y_distances):
+        if y_distances is None:
+            return _metpy_gpu_fallback("absolute_momentum", u, lats)
+        return _metpy_gpu_fallback("absolute_momentum", u, lats, y_distances)
     u_arr = _1d(u)
     lat_arr = _1d(lats)
     yd = _1d(y_distances)
     return _STUB_absolute_momentum(u_arr, lat_arr, yd)
 
 
-def cross_section_components(u, v, start_lat, start_lon, end_lat, end_lon):
+def cross_section_components(u, v, start_lat=None, start_lon=None, end_lat=None, end_lon=None):
     """Decompose wind into parallel and perpendicular cross-section components.
 
     Parameters
@@ -4230,6 +4661,16 @@ def cross_section_components(u, v, start_lat, start_lon, end_lat, end_lon):
     -------
     tuple of (cupy.ndarray, cupy.ndarray) (m/s)
     """
+    if (
+        start_lat is None
+        or start_lon is None
+        or end_lat is None
+        or end_lon is None
+        or _has_metpy_inputs(u, v, start_lat, start_lon, end_lat, end_lon)
+    ):
+        if start_lat is None and start_lon is None and end_lat is None and end_lon is None:
+            return _metpy_gpu_fallback("cross_section_components", u, v)
+        return _metpy_gpu_fallback("cross_section_components", u, v, start_lat, start_lon, end_lat, end_lon)
     u_arr = _1d(u)
     v_arr = _1d(v)
     slat = _scalar(start_lat)
@@ -4251,6 +4692,8 @@ def curvature_vorticity(u, v, dx, dy):
     -------
     cupy.ndarray (1/s)
     """
+    if _has_metpy_inputs(u, v, dx, dy):
+        return _metpy_gpu_fallback("curvature_vorticity", u, v, dx=dx, dy=dy)
     u_arr = _2d(u)
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
@@ -4267,7 +4710,7 @@ def curvature_vorticity(u, v, dx, dy):
     return out
 
 
-def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy):
+def inertial_advective_wind(u, v, u_geo, v_geo, dx=None, dy=None, latitude=None):
     """Inertial-advective wind.
 
     Parameters
@@ -4280,6 +4723,12 @@ def inertial_advective_wind(u, v, u_geo, v_geo, dx, dy):
     -------
     tuple of (cupy.ndarray, cupy.ndarray) (m/s)
     """
+    if _has_metpy_inputs(u, v, u_geo, v_geo, dx, dy, latitude) or latitude is not None:
+        kwargs = {"dx": dx, "dy": dy}
+        if latitude is not None:
+            kwargs["latitude"] = latitude
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        return _metpy_gpu_fallback("inertial_advective_wind", u, v, u_geo, v_geo, **kwargs)
     u_arr = _2d(u)
     v_arr = _2d(v)
     ug = _2d(u_geo)
@@ -4305,6 +4754,8 @@ def kinematic_flux(v_component, scalar):
     -------
     cupy.ndarray
     """
+    if _has_metpy_inputs(v_component, scalar):
+        return _metpy_gpu_fallback("kinematic_flux", v_component, scalar)
     v_arr = _1d(v_component)
     s_arr = _1d(scalar)
     return _STUB_kinematic_flux(v_arr, s_arr)
@@ -4354,6 +4805,8 @@ def shear_vorticity(u, v, dx, dy):
     -------
     cupy.ndarray (1/s)
     """
+    if _has_metpy_inputs(u, v, dx, dy):
+        return _metpy_gpu_fallback("shear_vorticity", u, v, dx=dx, dy=dy)
     u_arr = _2d(u)
     v_arr = _2d(v)
     dx_val = _mean_spacing(dx)
@@ -4493,6 +4946,18 @@ def lat_lon_grid_deltas(longitude, latitude, x_dim=-1, y_dim=-2, geod=None):
     -------
     tuple of (cupy.ndarray, cupy.ndarray) (m)
     """
+    if (
+        _has_metpy_inputs(longitude, latitude, geod)
+        or _array_ndim(longitude) == 1
+        or _array_ndim(latitude) == 1
+        or geod is not None
+        or x_dim != -1
+        or y_dim != -2
+    ):
+        kwargs = {"x_dim": x_dim, "y_dim": y_dim}
+        if geod is not None:
+            kwargs["geod"] = geod
+        return _metpy_gpu_fallback("lat_lon_grid_deltas", longitude, latitude, **kwargs)
     lon = _2d(longitude)
     lat = _2d(latitude)
     return _k_lat_lon_grid_deltas(lon, lat)
@@ -4558,6 +5023,8 @@ def critical_angle(*args):
     -------
     cupy.ndarray (degrees)
     """
+    if _has_metpy_inputs(*args):
+        return _metpy_gpu_fallback("critical_angle", *args)
     if len(args) == 4:
         # 4-arg form: (storm_u, storm_v, u_shear, v_shear)
         # Convert to 6-arg form by setting sfc=(0,0) and 500=(shear_u, shear_v)
@@ -4719,17 +5186,12 @@ def hot_dry_windy(temperature, relative_humidity, wind_speed_val, vpd=0.0):
     -------
     cupy.ndarray (dimensionless)
     """
-    t = _to_gpu(temperature)
-    rh = _to_gpu(relative_humidity)
-    ws = _to_gpu(wind_speed_val)
-    vpd_val = float(vpd)
-    if vpd_val > 0.0:
-        vpd_arr = cp.full_like(t, vpd_val)
-    else:
-        es = _vappres_sharppy_hpa(t)
-        ea = es * (rh / 100.0)
-        vpd_arr = cp.maximum(es - ea, 0.0)
-    return vpd_arr * ws
+    return _k_hot_dry_windy(
+        _to_gpu(temperature),
+        _to_gpu(relative_humidity),
+        _to_gpu(wind_speed_val),
+        float(vpd),
+    )
 
 
 def warm_nose_check(temperature, pressure):
@@ -4749,7 +5211,8 @@ def warm_nose_check(temperature, pressure):
     return _k_warm_nose_check(t, p)
 
 
-def galvez_davison_index(t950, t850, t700, t500, td950, td850, td700, sst):
+def galvez_davison_index(t950, t850=None, t700=None, t500=None, td950=None,
+                         td850=None, td700=None, sst=None, vertical_dim=0):
     """Galvez-Davison Index (tropical thunderstorm potential).
 
     Parameters
@@ -4760,6 +5223,24 @@ def galvez_davison_index(t950, t850, t700, t500, td950, td850, td700, sst):
     -------
     cupy.ndarray (dimensionless)
     """
+    if (
+        _has_metpy_inputs(t950, t850, t700, t500, td950, td850, td700, sst)
+        or (
+            t850 is not None
+            and t700 is not None
+            and t500 is not None
+            and td950 is None
+            and td850 is None
+            and td700 is None
+            and sst is None
+        )
+        or vertical_dim != 0
+    ):
+        args = [arg for arg in (t950, t850, t700, t500) if arg is not None]
+        kwargs = {}
+        if vertical_dim != 0:
+            kwargs["vertical_dim"] = vertical_dim
+        return _metpy_gpu_fallback("galvez_davison_index", *args, **kwargs)
     t950 = _to_gpu(t950)
     t850 = _to_gpu(t850)
     t700 = _to_gpu(t700)
@@ -4998,15 +5479,11 @@ def compute_dcp(dcape, mu_cape, shear06, mu_mixing_ratio):
     Inputs can be scalar, 1-D, or 2-D.
     Returns DCP, dimensionless.
     """
-    d = _to_gpu(dcape)
-    mc = _to_gpu(mu_cape)
-    sh = _to_gpu(shear06)
-    mr = _to_gpu(mu_mixing_ratio)
-    return (
-        cp.maximum(d / 980.0, 0.0)
-        * cp.maximum(mc / 2000.0, 0.0)
-        * cp.maximum(sh / 20.0, 0.0)
-        * cp.maximum(mr / 11.0, 0.0)
+    return _k_compute_dcp(
+        _to_gpu(dcape),
+        _to_gpu(mu_cape),
+        _to_gpu(shear06),
+        _to_gpu(mu_mixing_ratio),
     )
 
 
@@ -5079,6 +5556,9 @@ def smooth_gaussian(data, sigma):
     -------
     cupy.ndarray
     """
+    data_size = _array_size(data)
+    if _has_metpy_inputs(data, sigma) or (not _is_gpu_array(data) and data_size <= 64):
+        return _metpy_gpu_fallback("smooth_gaussian", data, sigma)
     arr = _2d(data)
     return _k_smooth_gaussian(arr, float(sigma))
 
@@ -5096,6 +5576,8 @@ def smooth_rectangular(data, size, passes=1):
     -------
     cupy.ndarray
     """
+    if _has_metpy_inputs(data, size, passes) or not _is_gpu_array(data):
+        return _metpy_gpu_fallback("smooth_rectangular", data, size, passes=passes)
     arr = _2d(data)
     return _k_smooth_rectangular(arr, int(size), int(passes))
 
@@ -5113,6 +5595,8 @@ def smooth_circular(data, radius, passes=1):
     -------
     cupy.ndarray
     """
+    if _has_metpy_inputs(data, radius, passes) or not _is_gpu_array(data):
+        return _metpy_gpu_fallback("smooth_circular", data, radius, passes=passes)
     arr = _2d(data)
     result = _k_smooth_circular(arr, int(radius))
     for _ in range(int(passes) - 1):
@@ -5133,6 +5617,8 @@ def smooth_n_point(data, n, passes=1):
     -------
     cupy.ndarray
     """
+    if _has_metpy_inputs(data, n, passes) or not _is_gpu_array(data):
+        return _metpy_gpu_fallback("smooth_n_point", data, n=n, passes=passes)
     arr = _2d(data)
     return _k_smooth_n_point(arr, int(n), int(passes))
 
@@ -5151,6 +5637,8 @@ def smooth_window(data, window, passes=1, normalize_weights=True):
     -------
     cupy.ndarray
     """
+    if _has_metpy_inputs(data, window, passes) or not _is_gpu_array(data):
+        return _metpy_gpu_fallback("smooth_window", data, window, passes=passes)
     d_arr = _2d(data)
     w_arr = _2d(window)
     return _k_smooth_window(d_arr, w_arr, int(passes), bool(normalize_weights))
@@ -5168,6 +5656,9 @@ def gradient(f, **kwargs):
     -------
     list of cupy.ndarray
     """
+    coordinates = kwargs.get("coordinates", None)
+    if coordinates is not None or _has_metpy_inputs(f, kwargs.get("deltas", None)):
+        return _metpy_gpu_fallback("gradient", f, **kwargs)
     data = _to_gpu(f)
     deltas = kwargs.get("deltas", None)
     if data.ndim == 2 and deltas is not None and len(deltas) >= 2:
@@ -5221,7 +5712,7 @@ def gradient_y(data, dy):
     return _gpu_first_derivative_uniform_2d(d_arr, dy_val, axis=0)
 
 
-def laplacian(data, dx, dy):
+def laplacian(data, dx=None, dy=None, **kwargs):
     """Laplacian (d2f/dx2 + d2f/dy2).
 
     Parameters
@@ -5233,6 +5724,8 @@ def laplacian(data, dx, dy):
     -------
     cupy.ndarray
     """
+    if kwargs.get("coordinates", None) is not None or _has_metpy_inputs(data, dx, dy):
+        return _metpy_gpu_fallback("laplacian", data, **kwargs)
     d_arr = _2d(data)
     dx_val = _mean_spacing(dx)
     dy_val = _mean_spacing(dy)
@@ -5255,6 +5748,15 @@ def first_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
     -------
     cupy.ndarray
     """
+    if _has_metpy_inputs(data, axis_spacing, x, delta):
+        kwargs = {"axis": axis}
+        if x is not None:
+            kwargs["x"] = x
+        if delta is not None:
+            kwargs["delta"] = delta
+        elif axis_spacing is not None:
+            kwargs["delta"] = axis_spacing
+        return _metpy_gpu_fallback("first_derivative", data, **kwargs)
     d_arr = _to_gpu(data)
     if delta is not None:
         axis_spacing = delta
@@ -5279,6 +5781,15 @@ def second_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
     -------
     cupy.ndarray
     """
+    if _has_metpy_inputs(data, axis_spacing, x, delta):
+        kwargs = {"axis": axis}
+        if x is not None:
+            kwargs["x"] = x
+        if delta is not None:
+            kwargs["delta"] = delta
+        elif axis_spacing is not None:
+            kwargs["delta"] = axis_spacing
+        return _metpy_gpu_fallback("second_derivative", data, **kwargs)
     d_arr = _to_gpu(data)
     if delta is not None:
         axis_spacing = delta
@@ -5294,6 +5805,36 @@ def second_derivative(data, axis_spacing=None, axis=0, x=None, delta=None):
 # CPU-only utility functions (no GPU benefit)
 # ===========================================================================
 
+_COMPASS_POINTS = {
+    8: (
+        ["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
+        ["North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest"],
+    ),
+    16: (
+        ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+         "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"],
+        ["North", "North-northeast", "Northeast", "East-northeast",
+         "East", "East-southeast", "Southeast", "South-southeast",
+         "South", "South-southwest", "Southwest", "West-southwest",
+         "West", "West-northwest", "Northwest", "North-northwest"],
+    ),
+    32: (
+        ["N", "NbE", "NNE", "NEbN", "NE", "NEbE", "ENE", "EbN",
+         "E", "EbS", "ESE", "SEbE", "SE", "SEbS", "SSE", "SbE",
+         "S", "SbW", "SSW", "SWbS", "SW", "SWbW", "WSW", "WbS",
+         "W", "WbN", "WNW", "NWbW", "NW", "NWbN", "NNW", "NbW"],
+        ["North", "North by east", "North-northeast", "Northeast by north",
+         "Northeast", "Northeast by east", "East-northeast", "East by north",
+         "East", "East by south", "East-southeast", "Southeast by east",
+         "Southeast", "Southeast by south", "South-southeast", "South by east",
+         "South", "South by west", "South-southwest", "Southwest by south",
+         "Southwest", "Southwest by west", "West-southwest", "West by south",
+         "West", "West by north", "West-northwest", "Northwest by west",
+         "Northwest", "Northwest by north", "North-northwest", "North by west"],
+    ),
+}
+
+
 def angle_to_direction(degrees, level=16, full=False):
     """Convert a meteorological angle to a cardinal direction string.
 
@@ -5307,15 +5848,16 @@ def angle_to_direction(degrees, level=16, full=False):
     -------
     str
     """
-    try:
-        from metrust.calc import angle_to_direction as _fn
-        return _fn(degrees, level, full)
-    except ImportError:
-        d = _scalar(degrees) % 360
-        dirs_16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-                    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-        idx = int((d + 11.25) / 22.5) % 16
-        return dirs_16[idx]
+    if _has_metpy_inputs(degrees) or level not in _COMPASS_POINTS:
+        return _metpy_gpu_fallback("angle_to_direction", degrees, full=full, level=level)
+
+    # Keep this local instead of delegating to metrust: metrust's argument
+    # order and level semantics have diverged from metcu's documented API.
+    d = _scalar(degrees) % 360.0
+    labels = _COMPASS_POINTS[level][1 if full else 0]
+    step = 360.0 / level
+    idx = int((d + step / 2.0) // step) % level
+    return labels[idx]
 
 
 def parse_angle(direction):
@@ -5329,6 +5871,8 @@ def parse_angle(direction):
     -------
     float or None
     """
+    if isinstance(direction, (list, tuple, np.ndarray)):
+        return _metpy_gpu_fallback("parse_angle", direction)
     try:
         from metrust.calc import parse_angle as _fn
         return _fn(direction)
@@ -5342,7 +5886,7 @@ def parse_angle(direction):
         return dirs.get(direction.strip().upper())
 
 
-def find_bounding_indices(values, target):
+def find_bounding_indices(values, target, axis=None, from_below=True):
     """Find two indices that bracket a target value.
 
     Parameters
@@ -5354,11 +5898,19 @@ def find_bounding_indices(values, target):
     -------
     tuple of (int, int) or None
     """
+    if axis is not None or _has_metpy_inputs(values, target):
+        return _metpy_gpu_fallback(
+            "find_bounding_indices",
+            values,
+            target,
+            axis=axis,
+            from_below=from_below,
+        )
     try:
         from metrust.calc import find_bounding_indices as _fn
         return _fn(values, target)
     except ImportError:
-        v = np.asarray(strip_units(values), dtype=np.float64).ravel()
+        v = _numpy_view(values, dtype=np.float64).ravel()
         t = float(strip_units(target))
         for i in range(len(v) - 1):
             if (v[i] <= t <= v[i + 1]) or (v[i] >= t >= v[i + 1]):
@@ -5366,7 +5918,7 @@ def find_bounding_indices(values, target):
         return None
 
 
-def nearest_intersection_idx(x, y1, y2):
+def nearest_intersection_idx(x, y1=None, y2=None):
     """Find the index nearest to where two series cross.
 
     Parameters
@@ -5377,12 +5929,14 @@ def nearest_intersection_idx(x, y1, y2):
     -------
     int or None
     """
+    if y2 is None:
+        return _metpy_gpu_fallback("nearest_intersection_idx", x, y1)
     try:
         from metrust.calc import nearest_intersection_idx as _fn
         return _fn(x, y1, y2)
     except ImportError:
-        y1a = np.asarray(strip_units(y1), dtype=np.float64)
-        y2a = np.asarray(strip_units(y2), dtype=np.float64)
+        y1a = _numpy_view(y1, dtype=np.float64)
+        y2a = _numpy_view(y2, dtype=np.float64)
         diff = y1a - y2a
         for i in range(len(diff) - 1):
             if diff[i] * diff[i + 1] <= 0:
@@ -5390,7 +5944,7 @@ def nearest_intersection_idx(x, y1, y2):
         return None
 
 
-def resample_nn_1d(x, xp, fp):
+def resample_nn_1d(x, xp, fp=None):
     """Nearest-neighbour 1-D resampling.
 
     Parameters
@@ -5401,18 +5955,20 @@ def resample_nn_1d(x, xp, fp):
     -------
     cupy.ndarray
     """
+    if fp is None:
+        return _metpy_gpu_fallback("resample_nn_1d", x, xp)
     try:
         from metrust.calc import resample_nn_1d as _fn
         result = _fn(
-            np.asarray(strip_units(x)),
-            np.asarray(strip_units(xp)),
-            np.asarray(strip_units(fp)),
+            _numpy_view(x),
+            _numpy_view(xp),
+            _numpy_view(fp),
         )
         return cp.asarray(result)
     except ImportError:
-        x_arr = np.asarray(strip_units(x), dtype=np.float64)
-        xp_arr = np.asarray(strip_units(xp), dtype=np.float64)
-        fp_arr = np.asarray(strip_units(fp), dtype=np.float64)
+        x_arr = _numpy_view(x, dtype=np.float64)
+        xp_arr = _numpy_view(xp, dtype=np.float64)
+        fp_arr = _numpy_view(fp, dtype=np.float64)
         indices = np.searchsorted(xp_arr, x_arr)
         indices = np.clip(indices, 0, len(xp_arr) - 1)
         return cp.asarray(fp_arr[indices])
@@ -5431,19 +5987,7 @@ def find_peaks(data, maxima=True, iqr_ratio=0.0):
     -------
     cupy.ndarray of int
     """
-    try:
-        from metrust.calc import find_peaks as _fn
-        result = _fn(data, maxima, iqr_ratio)
-        return cp.asarray(result)
-    except ImportError:
-        d = np.asarray(strip_units(data), dtype=np.float64)
-        peaks = []
-        for i in range(1, len(d) - 1):
-            if maxima and d[i] > d[i - 1] and d[i] > d[i + 1]:
-                peaks.append(i)
-            elif not maxima and d[i] < d[i - 1] and d[i] < d[i + 1]:
-                peaks.append(i)
-        return cp.asarray(peaks, dtype=cp.int64)
+    return _metpy_gpu_fallback("find_peaks", data, maxima=maxima, iqr_ratio=iqr_ratio)
 
 
 def peak_persistence(data, maxima=True):
@@ -5458,21 +6002,7 @@ def peak_persistence(data, maxima=True):
     -------
     list of (int, float)
     """
-    try:
-        from metrust.calc import peak_persistence as _fn
-        return _fn(data, maxima)
-    except ImportError:
-        # Simplified fallback
-        d = np.asarray(strip_units(data), dtype=np.float64)
-        peaks = []
-        for i in range(1, len(d) - 1):
-            if maxima and d[i] > d[i - 1] and d[i] > d[i + 1]:
-                pers = d[i] - min(d[i - 1], d[i + 1])
-                peaks.append((i, pers))
-            elif not maxima and d[i] < d[i - 1] and d[i] < d[i + 1]:
-                pers = max(d[i - 1], d[i + 1]) - d[i]
-                peaks.append((i, pers))
-        return sorted(peaks, key=lambda x: -x[1])
+    return _metpy_gpu_fallback("peak_persistence", data, maxima=maxima)
 
 
 def reduce_point_density(lats, lons, radius):
@@ -5491,8 +6021,8 @@ def reduce_point_density(lats, lons, radius):
         from metrust.calc import reduce_point_density as _fn
         return _fn(lats, lons, radius)
     except ImportError:
-        lat_arr = np.asarray(strip_units(lats), dtype=np.float64)
-        lon_arr = np.asarray(strip_units(lons), dtype=np.float64)
+        lat_arr = _numpy_view(lats, dtype=np.float64)
+        lon_arr = _numpy_view(lons, dtype=np.float64)
         r = float(strip_units(radius))
         n = len(lat_arr)
         keep = [True] * n
@@ -5522,13 +6052,21 @@ def azimuth_range_to_lat_lon(azimuths, ranges, center_lat, center_lon):
     -------
     tuple of (cupy.ndarray, cupy.ndarray)
     """
+    if _has_metpy_inputs(azimuths, ranges):
+        return _metpy_gpu_fallback(
+            "azimuth_range_to_lat_lon",
+            azimuths,
+            ranges,
+            center_lat,
+            center_lon,
+        )
     try:
         from metrust.calc import azimuth_range_to_lat_lon as _fn
         lats, lons = _fn(azimuths, ranges, center_lat, center_lon)
         return cp.asarray(lats), cp.asarray(lons)
     except ImportError:
-        az = np.asarray(strip_units(azimuths), dtype=np.float64)
-        rng = np.asarray(strip_units(ranges), dtype=np.float64)
+        az = _numpy_view(azimuths, dtype=np.float64)
+        rng = _numpy_view(ranges, dtype=np.float64)
         R = 6371229.0
         clat = float(strip_units(center_lat))
         clon = float(strip_units(center_lon))
@@ -5677,9 +6215,9 @@ def remove_observations_below_value(x, y, z, val=0):
 def remove_repeat_coordinates(x, y, z):
     """Remove duplicate (x, y) coordinate pairs, keeping the first."""
     # CuPy doesn't have unique with axis, fall back to numpy
-    x_np = np.asarray(strip_units(x), dtype=np.float64)
-    y_np = np.asarray(strip_units(y), dtype=np.float64)
-    z_np = np.asarray(strip_units(z), dtype=np.float64)
+    x_np = _numpy_view(x, dtype=np.float64)
+    y_np = _numpy_view(y, dtype=np.float64)
+    z_np = _numpy_view(z, dtype=np.float64)
     coords = np.column_stack([x_np, y_np])
     _, idx = np.unique(coords, axis=0, return_index=True)
     idx = np.sort(idx)
@@ -5693,8 +6231,8 @@ def interpolate_nans_1d(x, y, kind='linear'):
         return _fn(x, y, kind=kind)
     except ImportError:
         from scipy.interpolate import interp1d
-        xa = np.asarray(strip_units(x), dtype=np.float64)
-        ya = np.asarray(strip_units(y), dtype=np.float64)
+        xa = _numpy_view(x, dtype=np.float64)
+        ya = _numpy_view(y, dtype=np.float64)
         mask = ~np.isnan(ya)
         if mask.all() or not mask.any():
             return ya.copy()
@@ -5743,12 +6281,12 @@ def natural_neighbor_to_grid(xp, yp, variable, grid_x, grid_y):
     except ImportError:
         from scipy.interpolate import griddata
         pts = np.column_stack([
-            np.asarray(strip_units(xp)),
-            np.asarray(strip_units(yp)),
+            _numpy_view(xp),
+            _numpy_view(yp),
         ])
-        result = griddata(pts, np.asarray(strip_units(variable)),
-                          (np.asarray(strip_units(grid_x)),
-                           np.asarray(strip_units(grid_y))),
+        result = griddata(pts, _numpy_view(variable),
+                          (_numpy_view(grid_x),
+                           _numpy_view(grid_y)),
                           method='cubic')
         return result
 
@@ -5760,9 +6298,9 @@ def natural_neighbor_to_points(points, values, xi):
         return _fn(points, values, xi)
     except ImportError:
         from scipy.interpolate import griddata
-        return griddata(np.asarray(strip_units(points)),
-                        np.asarray(strip_units(values)),
-                        np.asarray(strip_units(xi)), method='cubic')
+        return griddata(_numpy_view(points),
+                        _numpy_view(values),
+                        _numpy_view(xi), method='cubic')
 
 
 def interpolate_to_isosurface(level_var, interp_var, level,
@@ -5773,8 +6311,8 @@ def interpolate_to_isosurface(level_var, interp_var, level,
         return _fn(level_var, interp_var, level,
                    bottom_up_search=bottom_up_search)
     except ImportError:
-        lv = np.asarray(strip_units(level_var), dtype=np.float64)
-        iv = np.asarray(strip_units(interp_var), dtype=np.float64)
+        lv = _numpy_view(level_var, dtype=np.float64)
+        iv = _numpy_view(interp_var, dtype=np.float64)
         lvl = float(level)
         nz = lv.shape[0]
         shape_2d = lv.shape[1:]
@@ -5803,11 +6341,11 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan,
         return _fn(x, xp, *args, axis=axis, fill_value=fill_value,
                    return_list_always=return_list_always)
     except ImportError:
-        x_np = np.asarray(strip_units(x), dtype=np.float64)
-        xp_np = np.asarray(strip_units(xp), dtype=np.float64)
+        x_np = _numpy_view(x, dtype=np.float64)
+        xp_np = _numpy_view(xp, dtype=np.float64)
         results = []
         for a in args:
-            a_np = np.asarray(strip_units(a), dtype=np.float64)
+            a_np = _numpy_view(a, dtype=np.float64)
             results.append(np.interp(x_np, xp_np, a_np, left=fill_value,
                                      right=fill_value))
         if len(results) == 1 and not return_list_always:
@@ -5817,8 +6355,8 @@ def interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan,
 
 def log_interpolate_1d(x, xp, *args, axis=0, fill_value=np.nan):
     """Interpolate in log-space along an axis."""
-    log_x = np.log(np.asarray(strip_units(x), dtype=np.float64))
-    log_xp = np.log(np.asarray(strip_units(xp), dtype=np.float64))
+    log_x = np.log(_numpy_view(x, dtype=np.float64))
+    log_xp = np.log(_numpy_view(xp, dtype=np.float64))
     return interpolate_1d(log_x, log_xp, *args, axis=axis,
                           fill_value=fill_value, return_list_always=True)
 
@@ -5867,6 +6405,131 @@ def geodesic(crs, start, end, steps):
 class InvalidSoundingError(Exception):
     """Raised when sounding data is invalid or insufficient."""
     pass
+
+
+# ===========================================================================
+# Preserve the original metrust public signatures for wrapper parity, even
+# when the implementation accepts extra MetPy-compatible forms internally.
+# ===========================================================================
+
+_P = inspect.Parameter
+_SIG = inspect.Signature
+
+absolute_momentum.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("lats", _P.POSITIONAL_OR_KEYWORD),
+    _P("y_distances", _P.POSITIONAL_OR_KEYWORD),
+])
+ageostrophic_wind.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+    _P("heights", _P.POSITIONAL_OR_KEYWORD),
+    _P("lats", _P.POSITIONAL_OR_KEYWORD),
+    _P("dx", _P.POSITIONAL_OR_KEYWORD),
+    _P("dy", _P.POSITIONAL_OR_KEYWORD),
+])
+cross_section_components.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+    _P("start_lat", _P.POSITIONAL_OR_KEYWORD),
+    _P("start_lon", _P.POSITIONAL_OR_KEYWORD),
+    _P("end_lat", _P.POSITIONAL_OR_KEYWORD),
+    _P("end_lon", _P.POSITIONAL_OR_KEYWORD),
+])
+find_bounding_indices.__signature__ = _SIG([
+    _P("values", _P.POSITIONAL_OR_KEYWORD),
+    _P("target", _P.POSITIONAL_OR_KEYWORD),
+])
+friction_velocity.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("w", _P.POSITIONAL_OR_KEYWORD),
+])
+galvez_davison_index.__signature__ = _SIG([
+    _P("t950", _P.POSITIONAL_OR_KEYWORD),
+    _P("t850", _P.POSITIONAL_OR_KEYWORD),
+    _P("t700", _P.POSITIONAL_OR_KEYWORD),
+    _P("t500", _P.POSITIONAL_OR_KEYWORD),
+    _P("td950", _P.POSITIONAL_OR_KEYWORD),
+    _P("td850", _P.POSITIONAL_OR_KEYWORD),
+    _P("td700", _P.POSITIONAL_OR_KEYWORD),
+    _P("sst", _P.POSITIONAL_OR_KEYWORD),
+])
+get_layer_heights.__signature__ = _SIG([
+    _P("pressure", _P.POSITIONAL_OR_KEYWORD),
+    _P("heights", _P.POSITIONAL_OR_KEYWORD),
+    _P("p_bottom", _P.POSITIONAL_OR_KEYWORD),
+    _P("p_top", _P.POSITIONAL_OR_KEYWORD),
+])
+gradient_richardson_number.__signature__ = _SIG([
+    _P("height", _P.POSITIONAL_OR_KEYWORD),
+    _P("potential_temperature", _P.POSITIONAL_OR_KEYWORD),
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+])
+inertial_advective_wind.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+    _P("u_geo", _P.POSITIONAL_OR_KEYWORD),
+    _P("v_geo", _P.POSITIONAL_OR_KEYWORD),
+    _P("dx", _P.POSITIONAL_OR_KEYWORD),
+    _P("dy", _P.POSITIONAL_OR_KEYWORD),
+])
+laplacian.__signature__ = _SIG([
+    _P("data", _P.POSITIONAL_OR_KEYWORD),
+    _P("dx", _P.POSITIONAL_OR_KEYWORD),
+    _P("dy", _P.POSITIONAL_OR_KEYWORD),
+])
+nearest_intersection_idx.__signature__ = _SIG([
+    _P("x", _P.POSITIONAL_OR_KEYWORD),
+    _P("y1", _P.POSITIONAL_OR_KEYWORD),
+    _P("y2", _P.POSITIONAL_OR_KEYWORD),
+])
+normal_component.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+    _P("start", _P.POSITIONAL_OR_KEYWORD),
+    _P("end", _P.POSITIONAL_OR_KEYWORD),
+])
+potential_vorticity_barotropic.__signature__ = _SIG([
+    _P("heights", _P.POSITIONAL_OR_KEYWORD),
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+    _P("lats", _P.POSITIONAL_OR_KEYWORD),
+    _P("dx", _P.POSITIONAL_OR_KEYWORD),
+    _P("dy", _P.POSITIONAL_OR_KEYWORD),
+])
+psychrometric_vapor_pressure_wet.__signature__ = _SIG([
+    _P("temperature", _P.POSITIONAL_OR_KEYWORD),
+    _P("wet_bulb", _P.POSITIONAL_OR_KEYWORD),
+    _P("pressure", _P.POSITIONAL_OR_KEYWORD),
+])
+resample_nn_1d.__signature__ = _SIG([
+    _P("x", _P.POSITIONAL_OR_KEYWORD),
+    _P("xp", _P.POSITIONAL_OR_KEYWORD),
+    _P("fp", _P.POSITIONAL_OR_KEYWORD),
+])
+scale_height.__signature__ = _SIG([
+    _P("temperature", _P.POSITIONAL_OR_KEYWORD),
+])
+tangential_component.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+    _P("start", _P.POSITIONAL_OR_KEYWORD),
+    _P("end", _P.POSITIONAL_OR_KEYWORD),
+])
+tke.__signature__ = _SIG([
+    _P("u", _P.POSITIONAL_OR_KEYWORD),
+    _P("v", _P.POSITIONAL_OR_KEYWORD),
+    _P("w", _P.POSITIONAL_OR_KEYWORD),
+])
+unit_vectors_from_cross_section.__signature__ = _SIG([
+    _P("start", _P.POSITIONAL_OR_KEYWORD),
+    _P("end", _P.POSITIONAL_OR_KEYWORD),
+])
+weighted_continuous_average.__signature__ = _SIG([
+    _P("values", _P.POSITIONAL_OR_KEYWORD),
+    _P("weights", _P.POSITIONAL_OR_KEYWORD),
+])
 
 
 # ===========================================================================

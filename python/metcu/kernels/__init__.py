@@ -1,4 +1,15 @@
-# CUDA kernel modules
+# CUDA kernel modules.
+#
+# IMPORTANT: install the PTX runtime patch BEFORE importing thermo/wind/grid.
+# After this, every cp.RawKernel(...) / cp.RawModule(...) inside those modules
+# routes through metcu.ptx_runtime, which loads pre-built .ptx files from
+# python/metcu/ptx/. CUDA-C strings in the source files are now only used to
+# materialize a .ptx on first run; the runtime path is pure PTX.
+import os as _os
+if _os.environ.get("METCU_DISABLE_PTX") != "1":
+    from metcu.ptx_runtime import install_kernel_patches as _install_ptx
+    _install_ptx()
+
 from .thermo import (  # noqa: F401
     # Per-element thermodynamic kernels (1-58)
     potential_temperature,

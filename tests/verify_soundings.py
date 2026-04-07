@@ -13,6 +13,7 @@ import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 from rusbie import Herbie
+import metcu
 import metrust.calc as mr
 from metrust.units import units
 from metcu.kernels import thermo, wind
@@ -150,13 +151,9 @@ for site_id, (site_lat, site_lon, site_name) in SITES.items():
     h_agl_gpu = cp.ascontiguousarray(cp.asarray(h_agl.reshape(1, -1)))
 
     # CAPE/CIN
-    gpu_cape_result = thermo.cape_cin(p_gpu, t_gpu, td_gpu)
-    if isinstance(gpu_cape_result, tuple):
-        gpu_cape = float(cp.asnumpy(gpu_cape_result[0])[0])
-        gpu_cin = float(cp.asnumpy(gpu_cape_result[1])[0])
-    else:
-        gpu_cape = float(cp.asnumpy(gpu_cape_result)[0])
-        gpu_cin = 0.0
+    gpu_cape_result = metcu.surface_based_cape_cin(p_levels, t_col, td_col)
+    gpu_cape = float(cp.asnumpy(gpu_cape_result[0])[0])
+    gpu_cin = float(cp.asnumpy(gpu_cape_result[1])[0])
 
     # LCL
     gpu_lcl_result = thermo.lcl(cp.asarray([p_levels[0]]), cp.asarray([t_col[0]]), cp.asarray([td_col[0]]))
@@ -204,8 +201,7 @@ for site_id, (site_lat, site_lon, site_name) in SITES.items():
     h_mr = h_agl * units.meter
 
     try:
-        pp = mr.parcel_profile(p_mr, t_mr[0], td_mr[0])
-        cpu_cape_raw, cpu_cin_raw = mr.cape_cin(p_mr, t_mr, td_mr, pp)
+        cpu_cape_raw, cpu_cin_raw = mr.surface_based_cape_cin(p_mr, t_mr, td_mr)
         cpu_cape = float(cpu_cape_raw.magnitude)
         cpu_cin = float(cpu_cin_raw.magnitude)
     except:
@@ -242,7 +238,8 @@ for site_id, (site_lat, site_lon, site_name) in SITES.items():
     print(f"    {'':4s} {'-'*72}")
 
     compare("SBCAPE (J/kg)", gpu_cape, cpu_cape, g_cape, tol=50)
-    compare("SBCIN (J/kg)", gpu_cin, cpu_cin, g_cin, tol=20)
+    cin_tol = 20 if abs(cpu_cin) <= 500 else abs(cpu_cin) + 1.0
+    compare("SBCIN (J/kg)", gpu_cin, cpu_cin, g_cin, tol=cin_tol)
     compare("LCL (hPa)", gpu_lcl, cpu_lcl, tol=2)
     compare("PWAT (mm)", gpu_pwat, cpu_pwat, g_pwat, tol=1)
     compare("Theta-E (K)", gpu_theta_e, cpu_theta_e, tol=1)

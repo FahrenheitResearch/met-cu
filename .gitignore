@@ -8,3 +8,17 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+bench_thermo_ptx.py
+python/metcu/ptx/*.ptx
+python/metcu/ptx/_sources/
+python/metcu/ptx_baseline/
+!python/metcu/ptx/wind_direction_kernel.ptx
+!python/metcu/ptx/wind_components_kernel.ptx
+!python/metcu/ptx/coriolis_parameter_kernel.ptx
+!python/metcu/ptx/vorticity_kernel.ptx
+!python/metcu/ptx/divergence_kernel.ptx
+!python/metcu/ptx/gradient_kernel.ptx
+!python/metcu/ptx/laplacian_kernel.ptx
+rap.grib2
+rap.grib2.*
+tests/benchmark_results.txt

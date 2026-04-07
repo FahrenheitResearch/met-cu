@@ -1,61 +1,88 @@
 # met-cu
 
-Custom CUDA kernels for meteorological calculations.
+`met-cu` is a GPU-accelerated meteorological calculation library with CUDA and Metal backends. It targets the `metrust.calc` surface, runs the hot numeric paths as native GPU kernels, and now ships a direct MetPy conformance suite so users can switch without giving up behavioral checks.
 
-`met-cu` is a CuPy-first GPU companion to `metrust` and `MetPy`. The current target is strong `metrust.calc` parity on the public calculation surface, with native CUDA kernels for the hot grid-composite paths and direct GPU array outputs.
+The current shape of the project is intentionally pragmatic:
+
+- Large numeric array and stencil workloads stay on GPU.
+- Batched sounding and grid-column workflows stay on GPU.
+- Small quantity/xarray-heavy compatibility cases can route through MetPy-compatible wrapper paths when exact behavior matters more than raw speed.
 
 ## Current status
 
-- `104` tests passing in the current suite.
-- Public `metrust.calc` name/signature parity is checked in `tests/test_wrapper_parity.py`.
-- Native grid kernels now back:
-  - `compute_cape_cin`
-  - `compute_srh`
-  - `compute_shear`
-  - `compute_pw`
-  - `composite_reflectivity_from_hydrometeors`
-- Optional plotting extras install via `met-cu[plot]`.
-- Return type is `cupy.ndarray` on GPU. This is not yet a full Pint/xarray MetPy drop-in.
+- Public `metrust.calc` name/signature parity is checked in [tests/test_wrapper_parity.py](tests/test_wrapper_parity.py).
+- Direct MetPy conformance is covered in [tests/test_against_metpy_core.py](tests/test_against_metpy_core.py) and [tests/test_against_metpy_extended.py](tests/test_against_metpy_extended.py).
+- Cross-checks against `metrust` remain in [tests/test_against_metrust.py](tests/test_against_metrust.py).
+- Latest combined verification run:
 
-## What this project is optimizing for
+```bash
+python -m pytest tests/test_against_metpy_core.py tests/test_against_metpy_extended.py tests/test_against_metrust.py tests/test_wrapper_parity.py -q --tb=short
+```
 
-- Large flat-array thermo and wind calculations
-- Large 2-D stencil workloads such as vorticity, divergence, frontogenesis, and q-vectors
-- Grid-wide column composites where thousands of columns can be processed in parallel
+Result on the current tree:
 
-It is less optimized for single tiny sounding calls where kernel launch overhead dominates.
+```text
+231 passed, 3 warnings
+```
+
+The warnings are existing dependency/runtime warnings from xarray/SciPy and MetPy/Pint. They do not affect pass/fail.
+
+## What met-cu is good at
+
+- Large per-element thermo and wind calculations
+- Large 2-D stencil work such as `vorticity`, `divergence`, `laplacian`, `frontogenesis`, and `q_vector`
+- Batched CAPE/CIN and other grid-column workflows
+- Keeping data resident on GPU in larger pipelines
+
+## Where it is less impressive
+
+- Tiny one-column sounding helpers where launch overhead dominates
+- Small compatibility-oriented utility calls that intentionally favor MetPy behavior over squeezing every last millisecond out of the GPU path
+
+That tradeoff is deliberate. The goal is "fast where GPUs matter, boringly compatible where users expect MetPy behavior."
 
 ## Installation
 
-Requires an NVIDIA GPU with CUDA 12+.
+Base install:
 
 ```bash
 pip install met-cu
 ```
 
-Optional plotting extras:
+CUDA:
 
 ```bash
-pip install "met-cu[plot]"
+pip install "met-cu[cuda]"
+```
+
+Metal on macOS:
+
+```bash
+pip install "met-cu[metal]"
+```
+
+Optional extras:
+
+```bash
+pip install "met-cu[plot,test,cpu]"
 ```
 
 ## Usage
 
-For the closest API match, think of `met-cu` as the GPU side of `metrust.calc`:
+Raw numeric arrays use the native GPU kernels:
 
 ```python
+import cupy as cp
 import metcu
 
-theta = metcu.potential_temperature(pressure_hpa, temperature_c)
+pressure = cp.array([1000.0, 900.0, 850.0])
+temperature = cp.array([20.0, 14.0, 10.0])
 
-# CuPy array on GPU
+theta = metcu.potential_temperature(pressure, temperature)
 print(type(theta))
-
-# Pull back to NumPy when needed
-theta_np = theta.get()
 ```
 
-Grid-composite APIs run directly on 3-D model fields:
+Grid-column kernels work directly on 3-D model fields:
 
 ```python
 cape, cin, lcl_h, lfc_h = metcu.compute_cape_cin(
@@ -69,76 +96,91 @@ cape, cin, lcl_h, lfc_h = metcu.compute_cape_cin(
 )
 ```
 
-## Benchmark snapshot vs metrust
+Compatibility-oriented wrappers accept the same public function names and signatures exposed by `metrust.calc`, with MetPy conformance tests covering the current public surface.
 
-Representative results from `python tests/benchmark_complete.py` on an RTX 5090. These numbers will move somewhat run to run, but this is the current shape of performance.
+## Performance snapshot vs MetPy
 
-| Function | GPU ms | CPU ms (`metrust`) | Speedup |
-|---|---:|---:|---:|
-| `potential_temperature` | 2.07 | 12.02 | 5.8x |
-| `dewpoint` | 0.12 | 1.23 | 10.1x |
-| `vorticity` | 3.43 | 99.24 | 28.9x |
-| `frontogenesis` | 8.21 | 342.28 | 41.7x |
-| `q_vector` | 7.83 | 307.92 | 39.3x |
-| `compute_cape_cin` | 6.74 | 5.70 | 0.8x |
-| `compute_srh` | 0.20 | 0.50 | 2.5x |
-| `compute_shear` | 0.29 | 0.62 | 2.1x |
-| `compute_pw` | 0.13 | 0.34 | 2.7x |
-| `composite_reflectivity_from_hydrometeors` | 0.40 | 0.34 | 0.8x |
+These are current measurements on an RTX 5090 CUDA machine. Exact numbers will move somewhat run to run, but the shape is stable.
 
-The headline is:
+From `python tests/benchmark_metpy_subset.py`:
 
-- Large per-element and stencil workloads are already much faster than `metrust`.
-- The new native grid composite kernels are in place and parity-checked.
-- `compute_cape_cin` is native now, but still near break-even against `metrust` on the current benchmark shape.
+| Function | Speedup vs MetPy |
+| --- | ---: |
+| `potential_temperature` | 11.95x |
+| `dewpoint` | 21.46x |
+| `vorticity` | 38.68x |
+| `frontogenesis` | 88.84x |
+| `q_vector` | 43.59x |
+| `surface_based_cape_cin` | 5.40x |
+| `precipitable_water` | 8.46x |
+| `bunkers_storm_motion` | 18.41x |
 
-## Single-sounding latency note
+From `python tests/benchmark_three_way.py` on RAP data:
 
-Single 40-level soundings are not where a GPU naturally wins. Current latency against `metrust` is mixed:
+| Function | Speedup vs MetPy |
+| --- | ---: |
+| `potential_temperature [800k]` | 110.56x |
+| `saturation_vapor_pressure [800k]` | 121.53x |
+| `wind_speed [800k]` | 108.88x |
+| `vorticity [864x864]` | 62.96x |
+| `divergence [864x864]` | 72.36x |
+| `frontogenesis [864x864]` | 134.49x |
+| `cape_cin x50 cols [batched]` | 84.03x |
 
-| Function | GPU ms | CPU ms (`metrust`) | Speedup |
-|---|---:|---:|---:|
-| `lcl` | 0.09 | 0.19 | 2.1x |
-| `lfc` | 0.36 | 0.30 | 0.8x |
-| `el` | 0.41 | 0.30 | 0.7x |
-| `parcel_profile` | 3.25 | 0.25 | 0.1x |
-| `moist_lapse` | 3.40 | 0.21 | 0.1x |
-| `surface_based_cape_cin` | 2.10 | 0.41 | 0.2x |
+From `python tests/benchmark_hrrr_full.py`:
 
-That is expected for tiny one-column workloads. The GPU value proposition here is throughput and keeping larger pipelines on device, not shaving fractions of a millisecond off one sounding call.
+- `38` functions tested
+- `38` accuracy-verified
+- average speedup vs MetPy: `12.2x`
+- median speedup vs MetPy: `5.5x`
+- max speedup vs MetPy: `79.6x`
 
-## Representative subset vs MetPy
+Representative full-HRRR wins:
 
-`metrust` is already much faster than plain Python `MetPy`, so a near break-even result against `metrust` can still be materially faster than `MetPy`.
+- `heat_index 79.6x`
+- `windchill 34.0x`
+- `frontogenesis 33.6x`
+- `divergence 18.9x`
+- `vorticity 16.9x`
+- `advection 16.8x`
 
-A reproducible subset benchmark lives in `tests/benchmark_metpy_subset.py`. On the current machine, representative results are:
+Small-profile caveats still apply. A few helpers are near tie or slower on small inputs, for example `moist_lapse`, `parcel_profile`, and `smooth_n_point` in the current benchmark setup.
 
-| Function | GPU ms | CPU ms (`MetPy`) | Speedup |
-|---|---:|---:|---:|
-| `potential_temperature` | 2.29 | 29.15 | 12.7x |
-| `vorticity` | 2.78 | 88.39 | 31.7x |
-| `frontogenesis` | 7.55 | 690.71 | 91.4x |
-| `cape_cin` | 2.45 | 2.97 | 1.2x |
-| `surface_based_cape_cin` | 2.17 | 5.62 | 2.6x |
-| `precipitable_water` | 0.16 | 1.66 | 10.4x |
-| `bulk_shear` | 0.17 | 2.18 | 12.9x |
-| `storm_relative_helicity` | 0.24 | 1.18 | 4.9x |
-| `bunkers_storm_motion` | 0.45 | 6.83 | 15.2x |
+## Verifying locally
 
-## Reproducing the benchmarks
-
-Full `metrust` comparison:
+Core compatibility gate:
 
 ```bash
-python tests/benchmark_complete.py
+python -m pytest tests/test_against_metpy_core.py tests/test_against_metpy_extended.py tests/test_against_metrust.py tests/test_wrapper_parity.py -q --tb=short
 ```
 
-Representative `MetPy` subset:
+Additional focused verification:
 
 ```bash
-pip install metpy
+python tests/verify_thermo.py
+python tests/verify_wind.py
+python tests/verify_grid.py
+python tests/verify_indices.py
+python tests/verify_severe.py
+python tests/verify_cape.py
+python tests/verify_soundings.py
+```
+
+Benchmarks:
+
+```bash
 python tests/benchmark_metpy_subset.py
+python tests/benchmark_three_way.py
+python tests/benchmark_hrrr_full.py
+python tests/benchmark_complete.py
+python tests/benchmark_gpu_vs_cpu.py
 ```
+
+## Notes
+
+- CUDA PTX is cached under `python/metcu/ptx/` and regenerated when the archived CUDA source changes.
+- The project includes fused and graph-oriented helpers for reducing wrapper and launch overhead in larger GPU pipelines.
+- Performance claims in this README are CUDA numbers. Metal support exists, but these benchmark figures are not Metal benchmarks.
 
 ## License
 

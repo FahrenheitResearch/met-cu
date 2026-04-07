@@ -178,37 +178,17 @@ print("=" * 72)
 
 # ---------- 1. Significant Tornado Parameter (STP) ----------
 print("\n--- STP (Significant Tornado Parameter) ---")
-print("  Formula differences:")
-print("    met-cu:   (cape/1500)*(srh/150)*(shear/20)*lcl_term, max(0)")
-print("    metrust:  same + shear<12.5->0, shear capped at 30")
+print("  Formula: (cape/1500) * lcl_term * (srh/150) * shear_term")
+print("  where shear_term=0 below 12.5 m/s and min(shear, 30)/20 otherwise")
 
 gpu_stp = metcu.significant_tornado_parameter(cape, lcl_height, srh, shear)
 cpu_stp = _mr_scalar_vec(_calc.significant_tornado_parameter,
                          cape, lcl_height, srh, shear)
 
-# Direct comparison (expected to differ due to shear handling)
 compare("STP cross-library", gpu_stp, cpu_stp,
-        "Different shear thresholds -- expected failure", expected_diff=True)
+        "metrust fixed-layer STP")
 
-# Verify met-cu against its own formula
-manual_stp_gpu = np.zeros(N)
-for i in range(N):
-    ct = cape[i] / 1500.0
-    st = srh[i] / 150.0
-    sht = shear[i] / 20.0
-    if lcl_height[i] < 1000.0:
-        lt = 1.0
-    elif lcl_height[i] > 2000.0:
-        lt = 0.0
-    else:
-        lt = (2000.0 - lcl_height[i]) / 1000.0
-    manual_stp_gpu[i] = max(ct * st * sht * lt, 0.0)
-
-compare("STP met-cu vs own formula", gpu_stp, manual_stp_gpu,
-        "(cape/1500)*(srh/150)*(shear/20)*lcl_term, max(0)")
-
-# Verify metrust against its own formula
-manual_stp_cpu = np.zeros(N)
+manual_stp = np.zeros(N)
 for i in range(N):
     ct = max(cape[i] / 1500.0, 0.0)
     st = max(srh[i] / 150.0, 0.0)
@@ -220,35 +200,27 @@ for i in range(N):
         lt = 1.0
     else:
         lt = np.clip((2000.0 - lcl_height[i]) / 1000.0, 0.0, 1.0)
-    manual_stp_cpu[i] = ct * lt * st * sht
+    manual_stp[i] = ct * lt * st * sht
 
-compare("STP metrust vs own formula", cpu_stp, manual_stp_cpu,
+compare("STP met-cu vs formula", gpu_stp, manual_stp,
+        "cape/1500 * lcl_term * srh/150 * shear_term")
+compare("STP metrust vs formula", cpu_stp, manual_stp,
         "metrust: cape/1500 * lcl_term * srh/150 * shear_term(12.5 cutoff, 30 cap)")
 
 
 # ---------- 2. Supercell Composite Parameter (SCP) ----------
 print("\n--- SCP (Supercell Composite Parameter) ---")
-print("  Formula differences:")
-print("    met-cu:   (cape/1000)*(srh/50)*(shear/30), max(0)")
-print("    metrust:  (cape/1000)*(srh/50)*(min(shear,20)/20), shear<10->0")
+print("  Formula: (cape/1000) * (srh/50) * shear_term")
+print("  where shear_term=0 below 10 m/s and min(shear, 20)/20 otherwise")
 
 gpu_scp = metcu.supercell_composite_parameter(mucape, srh, shear)
 cpu_scp = _mr_scalar_vec(_calc.supercell_composite_parameter,
                          mucape, srh, shear)
 
-# Direct comparison (expected to differ)
 compare("SCP cross-library", gpu_scp, cpu_scp,
-        "Different shear divisors/thresholds -- expected failure", expected_diff=True)
+        "metrust SCP")
 
-# Verify met-cu against its own formula
-manual_scp_gpu = np.maximum(
-    (mucape / 1000.0) * (srh / 50.0) * (shear / 30.0), 0.0
-)
-compare("SCP met-cu vs own formula", gpu_scp, manual_scp_gpu,
-        "(cape/1000)*(srh/50)*(shear/30), max(0)")
-
-# Verify metrust against its own formula
-manual_scp_cpu = np.zeros(N)
+manual_scp = np.zeros(N)
 for i in range(N):
     ct = max(mucape[i] / 1000.0, 0.0)
     st = max(srh[i] / 50.0, 0.0)
@@ -256,9 +228,11 @@ for i in range(N):
         sht = 0.0
     else:
         sht = max(min(shear[i], 20.0) / 20.0, 0.0)
-    manual_scp_cpu[i] = ct * st * sht
+    manual_scp[i] = ct * st * sht
 
-compare("SCP metrust vs own formula", cpu_scp, manual_scp_cpu,
+compare("SCP met-cu vs formula", gpu_scp, manual_scp,
+        "(cape/1000)*(srh/50)*(min(shear,20)/20), shear<10->0")
+compare("SCP metrust vs formula", cpu_scp, manual_scp,
         "metrust: (cape/1000)*(srh/50)*(min(shear,20)/20), shear<10->0")
 
 
@@ -288,32 +262,26 @@ compare("SHIP cross-library", gpu_ship, cpu_ship,
 
 # ---------- 5. Derecho Composite Parameter (DCP) ----------
 print("\n--- DCP (Derecho Composite Parameter) ---")
-print("  Formula differences:")
-print("    met-cu:   (dcape/980)*(mucape/2000)*(shear/20)*(mean_wind/16)")
-print("    metrust:  (dcape/980)*(mucape/2000)*(shear/20)*(mr/11)")
+print("  Formula: (dcape/980) * (mucape/2000) * (shear/20) * (mixing_ratio/11)")
 
-gpu_dcp = metcu.compute_dcp(dcape, mucape, shear, mean_wind)
+gpu_dcp = metcu.compute_dcp(dcape, mucape, shear, mixing_ratio_gkg)
 cpu_dcp = mr.compute_dcp(
     dcape.reshape(ny, nx), mucape.reshape(ny, nx),
     shear.reshape(ny, nx), mixing_ratio_gkg.reshape(ny, nx)
 )
 
-# Verify met-cu against its own formula
-manual_dcp_gpu = np.maximum(
-    (dcape / 980.0) * (mucape / 2000.0) * (shear / 20.0) * (mean_wind / 16.0),
-    0.0
-)
-compare("DCP met-cu vs own formula", gpu_dcp, manual_dcp_gpu,
-        "(dcape/980)*(mucape/2000)*(shear/20)*(mean_wind/16), max(0)")
-
-# Verify metrust against its own formula
 cpu_dcp_np = _to_np(cpu_dcp)
-manual_dcp_cpu = np.array([
+compare("DCP cross-library", gpu_dcp, cpu_dcp_np,
+        "(dcape/980)*(mucape/2000)*(shear/20)*(mixing_ratio/11)")
+
+manual_dcp = np.array([
     max(dcape[i]/980.0, 0) * max(mucape[i]/2000.0, 0) *
     max(shear[i]/20.0, 0) * max(mixing_ratio_gkg[i]/11.0, 0)
     for i in range(N)
 ])
-compare("DCP metrust vs own formula", cpu_dcp_np, manual_dcp_cpu,
+compare("DCP met-cu vs formula", gpu_dcp, manual_dcp,
+        "(dcape/980)*(mucape/2000)*(shear/20)*(mr/11), each term max(0)")
+compare("DCP metrust vs formula", cpu_dcp_np, manual_dcp,
         "(dcape/980)*(mucape/2000)*(shear/20)*(mr/11), each term max(0)")
 
 
@@ -432,38 +400,24 @@ compare("Fosberg FFWI", gpu_ffwi, cpu_ffwi,
 
 # ---------- 13. Haines Index ----------
 print("\n--- Haines Index ---")
-print("  Formula differences in threshold boundaries:")
-print("    met-cu:   A: dt<4->1, dt<8->2, else 3;  B: dd<6->1, dd<10->2, else 3")
-print("    metrust:  A: dt<=3->1, dt<=7->2, else 3; B: dd<=5->1, dd<=9->2, else 3")
+print("  Formula: A(dt<=3/7) + B(dd<=5/9)")
 
 gpu_haines = metcu.haines_index(t950, t850, td850)
 cpu_haines = _mr_scalar_vec(_calc.haines_index, t950, t850, td850)
 
-# Direct comparison (expected to differ at threshold boundaries)
 compare("Haines cross-library", gpu_haines, cpu_haines,
-        "Different threshold boundaries -- may differ at boundaries",
-        expected_diff=True)
+        "A(dt<=3/7) + B(dd<=5/9)")
 
-# Verify met-cu against its own formula
-manual_haines_gpu = np.zeros(N)
-for i in range(N):
-    dt = t950[i] - t850[i]
-    dd = t850[i] - td850[i]
-    a = 1 if dt < 4.0 else (2 if dt < 8.0 else 3)
-    b = 1 if dd < 6.0 else (2 if dd < 10.0 else 3)
-    manual_haines_gpu[i] = a + b
-compare("Haines met-cu vs own formula", gpu_haines, manual_haines_gpu,
-        "A(dt<4/8) + B(dd<6/10)")
-
-# Verify metrust against its own formula
-manual_haines_cpu = np.zeros(N)
+manual_haines = np.zeros(N)
 for i in range(N):
     dt = t950[i] - t850[i]
     dd = t850[i] - td850[i]
     a = 1 if dt <= 3.0 else (2 if dt <= 7.0 else 3)
     b = 1 if dd <= 5.0 else (2 if dd <= 9.0 else 3)
-    manual_haines_cpu[i] = a + b
-compare("Haines metrust vs own formula", cpu_haines, manual_haines_cpu,
+    manual_haines[i] = a + b
+compare("Haines met-cu vs formula", gpu_haines, manual_haines,
+        "A(dt<=3/7) + B(dd<=5/9)")
+compare("Haines metrust vs formula", cpu_haines, manual_haines,
         "A(dt<=3/7) + B(dd<=5/9)")
 
 
@@ -478,17 +432,17 @@ cpu_hdw = np.array([_calc.hot_dry_windy(float(temp_c[i]), float(rh_pct[i]),
 compare("Hot-Dry-Windy cross-library", gpu_hdw, cpu_hdw,
         "HDW = VPD * wind, VPD = es - ea", rtol=5e-3)
 
-# Verify both against manual SVP formula
-# met-cu uses: es = 6.112 * exp(17.67 * T / (T + 243.5))
+# Verify against the shared SHARPpy/Wexler SVP polynomial used by met-cu/metrust.
+from metcu.calc import _vappres_sharppy_hpa
 manual_hdw = np.zeros(N)
 for i in range(N):
-    es = 6.112 * np.exp(17.67 * temp_c[i] / (temp_c[i] + 243.5))
+    es = _vappres_sharppy_hpa(float(temp_c[i]))
     ea = es * rh_pct[i] / 100.0
     vpd = es - ea
     manual_hdw[i] = max(vpd * wind_ms[i], 0.0)
 
 compare("HDW met-cu vs manual SVP formula", gpu_hdw, manual_hdw,
-        "6.112*exp(17.67*T/(T+243.5))")
+        "SHARPpy/Wexler SVP polynomial")
 
 
 # ============================================================================
@@ -496,29 +450,25 @@ compare("HDW met-cu vs manual SVP formula", gpu_hdw, manual_hdw,
 # ============================================================================
 print("\n" + "=" * 72)
 total = passed + failed + expected_diffs + skipped
-print(f"RESULTS: {passed} passed, {failed} unexpected failures, "
+print(f"RESULTS: {passed} passed, {failed} failures, "
       f"{expected_diffs} expected diffs, {skipped} skipped "
       f"out of {total} tests")
 print("=" * 72)
 
 # Categorize failures
 print("\nExpected cross-library differences (intentional formula variants):")
-print("  - STP: metrust adds shear<12.5 cutoff and 30m/s cap (Thompson et al. 2003)")
-print("  - SCP: metrust uses shear/20 (capped at 20) vs met-cu shear/30")
-print("  - DCP: metrust uses mixing_ratio/11 vs met-cu mean_wind/16")
 print("  - BRN near-zero: metrust returns NaN, met-cu returns 0")
-print("  - Haines: threshold boundaries <=3/5/7/9 vs <4/6/8/10")
 print("  - Showalter: iterative parcel lifting step size differences")
 
 # Count self-consistency tests
-self_tests = [n for n in ["STP met-cu vs own formula",
-                           "STP metrust vs own formula",
-                           "SCP met-cu vs own formula",
-                           "SCP metrust vs own formula",
-                           "DCP met-cu vs own formula",
-                           "DCP metrust vs own formula",
-                           "Haines met-cu vs own formula",
-                           "Haines metrust vs own formula",
+self_tests = [n for n in ["STP met-cu vs formula",
+                           "STP metrust vs formula",
+                           "SCP met-cu vs formula",
+                           "SCP metrust vs formula",
+                           "DCP met-cu vs formula",
+                           "DCP metrust vs formula",
+                           "Haines met-cu vs formula",
+                           "Haines metrust vs formula",
                            "HDW met-cu vs manual SVP formula"]]
 print(f"\nSelf-consistency tests verify each implementation matches its documented formula.")
 

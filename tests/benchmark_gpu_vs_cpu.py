@@ -32,6 +32,12 @@ def benchmark(name, gpu_fn, cpu_fn, *args, warmup=3, iterations=10):
         cp.cuda.Device().synchronize()
         gpu_times.append(time.perf_counter() - t0)
 
+    gpu_best = min(gpu_times) * 1000
+
+    if cpu_fn is None:
+        print(f"  {name:40s}  GPU: {gpu_best:8.2f}ms  CPU: {'--':>8s}  {'--':>6s}")
+        return gpu_best, None, None
+
     # CPU timing
     cpu_times = []
     for _ in range(iterations):
@@ -39,7 +45,6 @@ def benchmark(name, gpu_fn, cpu_fn, *args, warmup=3, iterations=10):
         result_cpu = cpu_fn(*args)
         cpu_times.append(time.perf_counter() - t0)
 
-    gpu_best = min(gpu_times) * 1000
     cpu_best = min(cpu_times) * 1000
     speedup = cpu_best / gpu_best if gpu_best > 0 else 0
 
@@ -118,17 +123,20 @@ for size_name, ny, nx in sizes:
 
     benchmark("vorticity",
         lambda: metcu.vorticity(u_2d, v_2d, dx=dx, dy=dy),
-        lambda: mr.vorticity(u_2d * units('m/s'), v_2d * units('m/s')),
+        lambda: mr.vorticity(u_2d * units('m/s'), v_2d * units('m/s'),
+                             dx=3000.0 * units.m, dy=3000.0 * units.m),
         warmup=5)
 
     benchmark("divergence",
         lambda: metcu.divergence(u_2d, v_2d, dx=dx, dy=dy),
-        lambda: mr.divergence(u_2d * units('m/s'), v_2d * units('m/s')),
+        lambda: mr.divergence(u_2d * units('m/s'), v_2d * units('m/s'),
+                              dx=3000.0 * units.m, dy=3000.0 * units.m),
         warmup=5)
 
     benchmark("advection",
         lambda: metcu.advection(t_2d, u_2d, v_2d, dx=dx, dy=dy),
-        lambda: mr.advection(t_2d * units.degC, u_2d * units('m/s'), v_2d * units('m/s')),
+        lambda: mr.advection(t_2d * units.degC, u_2d * units('m/s'), v_2d * units('m/s'),
+                             dx=3000.0 * units.m, dy=3000.0 * units.m),
         warmup=5)
 
     benchmark("smooth_gaussian (sigma=3)",
@@ -145,16 +153,27 @@ for size_name, ny, nx in sizes:
     if ny * nx <= 100000:  # Only run column ops on manageable sizes
         print("\n  Column operations (per-column vertical):")
 
-        # Flatten to (ncols, nlevels) for CAPE kernel
-        t_flat = t_3d.reshape(-1, nlevels)
-        td_flat = td_3d.reshape(-1, nlevels)
-
-        # Note: CPU CAPE is per-column sequential, GPU is all columns parallel
-        # This is where the biggest speedup should be
+        pressure_3d_pa = np.broadcast_to(
+            (p_col[:, None, None] * 100.0), (nlevels, ny, nx)
+        ).copy()
+        temperature_3d_c = np.transpose(t_3d, (2, 0, 1)).copy()
+        dewpoint_3d_c = np.transpose(td_3d, (2, 0, 1)).copy()
+        es_td = 6.112 * np.exp(17.67 * dewpoint_3d_c / (dewpoint_3d_c + 243.5))
+        qvapor_3d = 0.6219569100577033 * es_td / (p_col[:, None, None] - es_td)
+        z_std = 44330.0 * (1.0 - (p_col / 1013.25) ** 0.1903)
+        height_agl_3d = np.broadcast_to(
+            (z_std - z_std[0])[:, None, None], (nlevels, ny, nx)
+        ).copy()
+        psfc_pa = np.full((ny, nx), p_col[0] * 100.0)
+        t2_k = t_3d[:, :, 0] + 273.15
+        q2 = qvapor_3d[0]
 
         benchmark("CAPE/CIN (all columns)",
-            lambda: metcu.cape_cin_batch(p_col, t_flat, td_flat),
-            lambda: None,  # CPU version would be very slow, skip for large grids
+            lambda: metcu.compute_cape_cin(
+                pressure_3d_pa, temperature_3d_c, qvapor_3d, height_agl_3d,
+                psfc_pa, t2_k, q2,
+            ),
+            None,  # CPU version would be very slow, skip for large grids
             warmup=3, iterations=5)
 
 print("\nBenchmark complete.")
